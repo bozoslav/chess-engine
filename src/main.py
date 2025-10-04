@@ -1,5 +1,3 @@
-torch.tensor([1, 2, 3])
-def board_to_tensor(board):
 import chess.engine
 import chess
 import torch
@@ -9,13 +7,14 @@ import torch.nn.functional as F
 class ChessPositionNet(nn.Module):
     def __init__(self):
         super(ChessPositionNet, self).__init__()
-        # Input: 12x8x8, flatten to 768
-        self.fc1 = nn.Linear(12*8*8, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 1)  # Output: position score
+        self.emb = nn.Embedding(13*8*8, 1024)
+        self.fc1 = nn.Linear(1024, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, 1)
 
     def forward(self, x):
-        x = x.view(-1, 12*8*8)  # Flatten
+        x = self.emb(x)
+        x = x.sum(axis=1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
@@ -23,7 +22,7 @@ class ChessPositionNet(nn.Module):
 
 def board_to_tensor(board):
     piece_map = board.piece_map()
-    tensor = torch.zeros((12, 8, 8), dtype=torch.float32)
+    indices = torch.zeros(8*8, dtype=torch.long)
 
     piece_to_index = {
         chess.PAWN: 0,
@@ -34,24 +33,25 @@ def board_to_tensor(board):
         chess.KING: 5
     }
 
-    for square, piece in piece_map.items():
+    for square in range(64):
         row = 7 - (square // 8)
         col = square % 8
-        index = piece_to_index[piece.piece_type]
-        if piece.color == chess.BLACK:
-            index += 6
-        tensor[index, row, col] = 1.0
+        piece = board.piece_at(square)
+        if piece:
+            index = piece_to_index[piece.piece_type]
+            if piece.color == chess.BLACK:
+                index += 6
+            indices[square] = row + 8*col + 8*8*(index+1)
+        else:
+            indices[square] = 0
 
-    return tensor
+    return indices
 
 if __name__ == "__main__":
-    board = chess.Board("1k1r4/pp1b1R2/3q2pp/4p3/2B5/4Q3/PPP2B2/2K5 b - - 0 1")
+    #board = chess.Board("2bq1rk1/pr3ppn/1p2p3/7P/2pP1B1P/2P5/PPQ2PB1/R3R1K1 w - -")
+    board = chess.Board("1n3rk1/1pq1bp1p/r2pb3/4p1p1/4n3/1N6/PPP2PPP/2KR3R w - - 0 15")
     net = ChessPositionNet()
     tensor = board_to_tensor(board)
-    tensor = tensor.unsqueeze(0)  # Add batch dimension
+    tensor = tensor.unsqueeze(0)
     score = net(tensor)
     print("Position score:", score.item())
-
-tensor = board_to_tensor(board)
-print(tensor)
-
