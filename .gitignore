@@ -35,6 +35,10 @@ data/
 # Model checkpoints and trained models
 checkpoints/
 chess_model_final.pth
+training_data/
+training_data/*.pth
+training_data/*.pt
+training_data/training_log.csv
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
