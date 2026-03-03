@@ -1,1 +1,1 @@
-# chess-engine
+# Chess engine
