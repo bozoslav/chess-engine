@@ -1,6 +1,7 @@
 #include <iostream>
 
 #include "board.h"
+#include "movegen.h"
 
 void printResult(const char* testName, bool actual, bool expected) {
   std::cout << testName << ": " << ((actual == expected) ? "PASS" : "FAIL")
@@ -41,4 +42,11 @@ int main() {
   printResult("Make move before undo", undoTest.makeMove({7, 1, 5, 2}), true);
   printResult("Undo last move", undoTest.undoMove(), true);
   printResult("Move again after undo", undoTest.makeMove({7, 1, 5, 2}), true);
+
+  Board basic;
+  std::cout << perft(basic, 1) << "\n";
+  std::cout << perft(basic, 2) << "\n";
+  std::cout << perft(basic, 3) << "\n";
+  std::cout << perft(basic, 4) << "\n";
+  std::cout << perft(basic, 5) << "\n";
 }

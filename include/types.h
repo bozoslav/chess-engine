@@ -30,3 +30,10 @@ enum class Piece : unsigned char {
   BlackQueen = 15,
   BlackKing = 16,
 };
+
+bool isWhitePiece(Piece piece);
+bool isBlackPiece(Piece piece);
+bool matchesColor(Piece piece, Color color);
+bool isSameColor(Piece first, Piece second);
+PieceType pieceType(Piece piece);
+Color oppositeColor(Color color);

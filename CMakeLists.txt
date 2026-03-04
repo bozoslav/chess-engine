@@ -9,6 +9,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(chess_engine
   src/main.cpp
   src/board.cpp
+  src/types.cpp
+  src/movegen.cpp
 )
 
 target_include_directories(chess_engine PRIVATE include)

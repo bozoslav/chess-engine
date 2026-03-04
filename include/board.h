@@ -1,7 +1,6 @@
 #pragma once
 
 #include "move.h"
-#include "types.h"
 
 class Board {
  public:
@@ -9,21 +8,35 @@ class Board {
 
   Board();
 
-  bool makeMove(const Move& move);
   bool undoMove();
-  bool isKingInCheck() const;
   void printBoard() const;
+  Color sideToMove() const;
+  bool isKingInCheck() const;
+  Piece at(int x, int y) const;
+  bool makeMove(const Move& move);
 
  private:
   struct MoveState {
     Move move;
     Piece movedPiece;
+    Piece placedPiece;
     Piece capturedPiece;
+    int capX;
+    int capY;
+    bool wasEp;
+    bool wasCastle;
+    int rookFromX;
+    int rookFromY;
+    int rookToX;
+    int rookToY;
     Color prevSide;
     bool prevWCastleK;
     bool prevWCastleQ;
     bool prevBCastleK;
     bool prevBCastleQ;
+    bool prevHasEp;
+    int prevEpX;
+    int prevEpY;
   };
 
   static constexpr int kMaxHistory = 1024;
@@ -38,7 +51,7 @@ class Board {
   bool isValidBishopMove(const Move& move) const;
   bool isValidRookMove(const Move& move) const;
   bool isValidQueenMove(const Move& move) const;
-  bool isValidKingMove(const Move& move) const;
+  bool isValidKingMove(const Move& move, Piece movingPiece) const;
   bool isSquareUnderAttack(int x, int y, Color attackingColor) const;
   bool isKingInCheckForSide(Color kingColor) const;
   void updateCastlingRights(const Move& move, Piece movingPiece,
@@ -50,6 +63,9 @@ class Board {
   bool wCastleQ;
   bool bCastleK;
   bool bCastleQ;
+  bool hasEp;
+  int epX;
+  int epY;
   MoveState history[kMaxHistory];
   int histSize;
 };

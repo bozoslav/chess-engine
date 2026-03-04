@@ -3,6 +3,8 @@
 #include <cmath>
 #include <iostream>
 
+#include "types.h"
+
 namespace {
 
 constexpr int kBlackBackRank = 0;
@@ -19,73 +21,49 @@ constexpr int kKingsideBishopFile = 5;
 constexpr int kKingsideKnightFile = 6;
 constexpr int kKingsideRookFile = Board::kBoardSize - 1;
 
-bool isWhitePiece(Piece piece) {
-  switch (piece) {
-    case Piece::WhitePawn:
-    case Piece::WhiteKnight:
-    case Piece::WhiteBishop:
-    case Piece::WhiteRook:
-    case Piece::WhiteQueen:
-    case Piece::WhiteKing:
-      return true;
-    default:
-      return false;
+bool isPromoPiece(PieceType type) {
+  return type == PieceType::Queen || type == PieceType::Rook ||
+         type == PieceType::Bishop || type == PieceType::Knight;
+}
+
+Piece makePiece(Color side, PieceType type) {
+  if (side == Color::White) {
+    switch (type) {
+      case PieceType::Pawn:
+        return Piece::WhitePawn;
+      case PieceType::Knight:
+        return Piece::WhiteKnight;
+      case PieceType::Bishop:
+        return Piece::WhiteBishop;
+      case PieceType::Rook:
+        return Piece::WhiteRook;
+      case PieceType::Queen:
+        return Piece::WhiteQueen;
+      case PieceType::King:
+        return Piece::WhiteKing;
+      case PieceType::None:
+      default:
+        return Piece::None;
+    }
   }
-}
 
-bool isBlackPiece(Piece piece) {
-  switch (piece) {
-    case Piece::BlackPawn:
-    case Piece::BlackKnight:
-    case Piece::BlackBishop:
-    case Piece::BlackRook:
-    case Piece::BlackQueen:
-    case Piece::BlackKing:
-      return true;
+  switch (type) {
+    case PieceType::Pawn:
+      return Piece::BlackPawn;
+    case PieceType::Knight:
+      return Piece::BlackKnight;
+    case PieceType::Bishop:
+      return Piece::BlackBishop;
+    case PieceType::Rook:
+      return Piece::BlackRook;
+    case PieceType::Queen:
+      return Piece::BlackQueen;
+    case PieceType::King:
+      return Piece::BlackKing;
+    case PieceType::None:
     default:
-      return false;
+      return Piece::None;
   }
-}
-
-bool matchesColor(Piece piece, Color color) {
-  return (color == Color::White && isWhitePiece(piece)) ||
-         (color == Color::Black && isBlackPiece(piece));
-}
-
-bool isSameColor(Piece first, Piece second) {
-  if (first == Piece::None || second == Piece::None) return false;
-  return (isWhitePiece(first) && isWhitePiece(second)) ||
-         (isBlackPiece(first) && isBlackPiece(second));
-}
-
-PieceType pieceType(Piece piece) {
-  switch (piece) {
-    case Piece::WhitePawn:
-    case Piece::BlackPawn:
-      return PieceType::Pawn;
-    case Piece::WhiteKnight:
-    case Piece::BlackKnight:
-      return PieceType::Knight;
-    case Piece::WhiteBishop:
-    case Piece::BlackBishop:
-      return PieceType::Bishop;
-    case Piece::WhiteRook:
-    case Piece::BlackRook:
-      return PieceType::Rook;
-    case Piece::WhiteQueen:
-    case Piece::BlackQueen:
-      return PieceType::Queen;
-    case Piece::WhiteKing:
-    case Piece::BlackKing:
-      return PieceType::King;
-    case Piece::None:
-    default:
-      return PieceType::None;
-  }
-}
-
-Color oppositeColor(Color color) {
-  return color == Color::White ? Color::Black : Color::White;
 }
 
 bool pathIsClear(const Piece board[Board::kBoardSize][Board::kBoardSize],
@@ -143,6 +121,9 @@ Board::Board() {
   wCastleQ = true;
   bCastleK = true;
   bCastleQ = true;
+  hasEp = false;
+  epX = -1;
+  epY = -1;
   histSize = 0;
 }
 
@@ -159,18 +140,34 @@ bool Board::isValidPawnMove(const Move& move, Piece movingPiece,
   const int direction = isWhitePiece(movingPiece) ? -1 : 1;
   const int startRank =
       isWhitePiece(movingPiece) ? kWhitePawnRank : kBlackPawnRank;
+  const int promoRank =
+      isWhitePiece(movingPiece) ? kBlackBackRank : kWhiteBackRank;
   const int dx = move.toX - move.fromX;
   const int dy = move.toY - move.fromY;
+  bool ok = false;
 
   if (dy == 0) {
-    if (dx == direction && targetPiece == Piece::None) return true;
+    if (dx == direction && targetPiece == Piece::None) ok = true;
     if (move.fromX == startRank && dx == 2 * direction &&
         targetPiece == Piece::None &&
         board[move.fromX + direction][move.fromY] == Piece::None)
-      return true;
+      ok = true;
+  } else if (std::abs(dy) == 1 && dx == direction) {
+    if (targetPiece != Piece::None) {
+      ok = true;
+    } else if (hasEp && move.toX == epX && move.toY == epY) {
+      const int capX = move.toX + (isWhitePiece(movingPiece) ? 1 : -1);
+      const Piece epPawn =
+          isWhitePiece(movingPiece) ? Piece::BlackPawn : Piece::WhitePawn;
+      ok = isInsideBoard(capX, move.toY) && board[capX][move.toY] == epPawn;
+    }
   }
 
-  return std::abs(dy) == 1 && dx == direction && targetPiece != Piece::None;
+  if (!ok) return false;
+
+  if (move.toX == promoRank) return isPromoPiece(move.promo);
+
+  return move.promo == PieceType::None;
 }
 
 bool Board::isValidKnightMove(const Move& move) const {
@@ -195,10 +192,37 @@ bool Board::isValidQueenMove(const Move& move) const {
   return isValidBishopMove(move) || isValidRookMove(move);
 }
 
-bool Board::isValidKingMove(const Move& move) const {
+bool Board::isValidKingMove(const Move& move, Piece movingPiece) const {
   const int dx = std::abs(move.toX - move.fromX);
   const int dy = std::abs(move.toY - move.fromY);
-  return dx <= 1 && dy <= 1 && (dx != 0 || dy != 0);
+  if (dx <= 1 && dy <= 1 && (dx != 0 || dy != 0)) return true;
+
+  if (dx != 0 || dy != 2) return false;
+
+  const bool white = movingPiece == Piece::WhiteKing;
+  const bool kingSide = move.toY > move.fromY;
+  const bool hasRight = white ? (kingSide ? wCastleK : wCastleQ)
+                              : (kingSide ? bCastleK : bCastleQ);
+  if (!hasRight) return false;
+  if (isKingInCheckForSide(white ? Color::White : Color::Black)) return false;
+
+  const int rookY = kingSide ? kKingsideRookFile : kQueensideRookFile;
+  const Piece rook = white ? Piece::WhiteRook : Piece::BlackRook;
+  if (board[move.fromX][rookY] != rook) return false;
+
+  const int step = kingSide ? 1 : -1;
+  for (int y = move.fromY + step; y != rookY; y += step) {
+    if (board[move.fromX][y] != Piece::None) return false;
+  }
+
+  if (isSquareUnderAttack(move.fromX, move.fromY + step,
+                          oppositeColor(white ? Color::White : Color::Black)))
+    return false;
+  if (isSquareUnderAttack(move.toX, move.toY,
+                          oppositeColor(white ? Color::White : Color::Black)))
+    return false;
+
+  return true;
 }
 
 bool Board::isValidPieceMove(const Move& move, Piece movingPiece,
@@ -215,7 +239,7 @@ bool Board::isValidPieceMove(const Move& move, Piece movingPiece,
     case PieceType::Queen:
       return isValidQueenMove(move);
     case PieceType::King:
-      return isValidKingMove(move);
+      return isValidKingMove(move, movingPiece);
     case PieceType::None:
     default:
       return false;
@@ -381,6 +405,7 @@ bool Board::makeMove(const Move& move) {
   const Piece targetPiece = board[move.toX][move.toY];
 
   if (movingPiece == Piece::None) return false;
+  if (pieceType(targetPiece) == PieceType::King) return false;
   if (targetPiece != Piece::None && isSameColor(movingPiece, targetPiece)) {
     return false;
   }
@@ -393,16 +418,69 @@ bool Board::makeMove(const Move& move) {
   MoveState& state = history[histSize++];
   state.move = move;
   state.movedPiece = movingPiece;
+  state.placedPiece = movingPiece;
   state.capturedPiece = targetPiece;
+  state.capX = move.toX;
+  state.capY = move.toY;
+  state.wasEp = false;
+  state.wasCastle = false;
+  state.rookFromX = -1;
+  state.rookFromY = -1;
+  state.rookToX = -1;
+  state.rookToY = -1;
   state.prevSide = side;
   state.prevWCastleK = wCastleK;
   state.prevWCastleQ = wCastleQ;
   state.prevBCastleK = bCastleK;
   state.prevBCastleQ = bCastleQ;
+  state.prevHasEp = hasEp;
+  state.prevEpX = epX;
+  state.prevEpY = epY;
 
-  board[move.toX][move.toY] = movingPiece;
+  const PieceType movingType = pieceType(movingPiece);
+  const bool white = movingSide == Color::White;
+
+  if (movingType == PieceType::Pawn && targetPiece == Piece::None &&
+      move.fromY != move.toY && hasEp && move.toX == epX && move.toY == epY) {
+    state.wasEp = true;
+    state.capX = move.toX + (white ? 1 : -1);
+    state.capY = move.toY;
+    state.capturedPiece = board[state.capX][state.capY];
+    board[state.capX][state.capY] = Piece::None;
+  }
+
+  if (movingType == PieceType::Pawn) {
+    const int promoRank = white ? kBlackBackRank : kWhiteBackRank;
+    if (move.toX == promoRank) {
+      state.placedPiece = makePiece(movingSide, move.promo);
+    }
+  }
+
+  if (movingType == PieceType::King && move.fromX == move.toX &&
+      std::abs(move.toY - move.fromY) == 2) {
+    state.wasCastle = true;
+    state.rookFromX = move.fromX;
+    state.rookToX = move.fromX;
+    state.rookFromY = move.toY > move.fromY ? kKingsideRookFile : kQueensideRookFile;
+    state.rookToY = move.toY > move.fromY ? kKingsideBishopFile : kQueenFile;
+  }
+
+  board[move.toX][move.toY] = state.placedPiece;
   board[move.fromX][move.fromY] = Piece::None;
+  if (state.wasCastle) {
+    board[state.rookToX][state.rookToY] = board[state.rookFromX][state.rookFromY];
+    board[state.rookFromX][state.rookFromY] = Piece::None;
+  }
+
   updateCastlingRights(move, movingPiece, targetPiece);
+  hasEp = false;
+  epX = -1;
+  epY = -1;
+  if (movingType == PieceType::Pawn && std::abs(move.toX - move.fromX) == 2) {
+    hasEp = true;
+    epX = (move.fromX + move.toX) / 2;
+    epY = move.fromY;
+  }
   side = oppositeColor(side);
 
   if (isKingInCheckForSide(movingSide)) {
@@ -418,13 +496,26 @@ bool Board::undoMove() {
 
   const MoveState& state = history[--histSize];
 
+  if (state.wasCastle) {
+    board[state.rookFromX][state.rookFromY] = board[state.rookToX][state.rookToY];
+    board[state.rookToX][state.rookToY] = Piece::None;
+  }
+
   board[state.move.fromX][state.move.fromY] = state.movedPiece;
-  board[state.move.toX][state.move.toY] = state.capturedPiece;
+  if (state.wasEp) {
+    board[state.move.toX][state.move.toY] = Piece::None;
+    board[state.capX][state.capY] = state.capturedPiece;
+  } else {
+    board[state.move.toX][state.move.toY] = state.capturedPiece;
+  }
   side = state.prevSide;
   wCastleK = state.prevWCastleK;
   wCastleQ = state.prevWCastleQ;
   bCastleK = state.prevBCastleK;
   bCastleQ = state.prevBCastleQ;
+  hasEp = state.prevHasEp;
+  epX = state.prevEpX;
+  epY = state.prevEpY;
 
   return true;
 }
@@ -473,3 +564,7 @@ void Board::printBoard() const {
   }
   std::cout << "\n";
 }
+
+Color Board::sideToMove() const { return side; }
+
+Piece Board::at(int x, int y) const { return board[x][y]; }
