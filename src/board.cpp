@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <string_view>
 
 #include "types.h"
 
@@ -66,6 +67,65 @@ Piece makePiece(Color side, PieceType type) {
   }
 }
 
+Piece pieceFromFen(char c) {
+  switch (c) {
+    case 'P':
+      return Piece::WhitePawn;
+    case 'N':
+      return Piece::WhiteKnight;
+    case 'B':
+      return Piece::WhiteBishop;
+    case 'R':
+      return Piece::WhiteRook;
+    case 'Q':
+      return Piece::WhiteQueen;
+    case 'K':
+      return Piece::WhiteKing;
+    case 'p':
+      return Piece::BlackPawn;
+    case 'n':
+      return Piece::BlackKnight;
+    case 'b':
+      return Piece::BlackBishop;
+    case 'r':
+      return Piece::BlackRook;
+    case 'q':
+      return Piece::BlackQueen;
+    case 'k':
+      return Piece::BlackKing;
+    default:
+      return Piece::None;
+  }
+}
+
+void skipSpaces(std::string_view text, std::size_t& pos) {
+  while (pos < text.size() && text[pos] == ' ') ++pos;
+}
+
+bool nextFenField(std::string_view fen, std::size_t& pos,
+                  std::string_view& field) {
+  skipSpaces(fen, pos);
+  if (pos >= fen.size()) return false;
+
+  const std::size_t start = pos;
+  while (pos < fen.size() && fen[pos] != ' ') ++pos;
+  field = fen.substr(start, pos - start);
+  return !field.empty();
+}
+
+bool parseFenSquare(std::string_view square, int& x, int& y) {
+  if (square.size() != 2) return false;
+
+  const char file = square[0];
+  const char rank = square[1];
+  if (file < 'a' || file > 'h') return false;
+  if (rank < '1' || rank > '8') return false;
+
+  y = file - 'a';
+  x = Board::kBoardSize - (rank - '0');
+  return true;
+}
+
 bool pathIsClear(const Piece board[Board::kBoardSize][Board::kBoardSize],
                  const Move& move) {
   const int stepX = (move.toX > move.fromX) - (move.toX < move.fromX);
@@ -125,6 +185,99 @@ Board::Board() {
   epX = -1;
   epY = -1;
   histSize = 0;
+}
+
+bool Board::setFromFen(std::string_view fen) {
+  Piece parsedBoard[kBoardSize][kBoardSize] = {};
+
+  std::size_t pos = 0;
+  std::string_view field;
+  if (!nextFenField(fen, pos, field)) return false;
+
+  int x = 0;
+  int y = 0;
+  for (char c : field) {
+    if (c == '/') {
+      if (y != kBoardSize || x == kBoardSize - 1) return false;
+      ++x;
+      y = 0;
+      continue;
+    }
+
+    if (c >= '1' && c <= '8') {
+      y += c - '0';
+      if (y > kBoardSize) return false;
+      continue;
+    }
+
+    const Piece piece = pieceFromFen(c);
+    if (piece == Piece::None || y >= kBoardSize) return false;
+    parsedBoard[x][y++] = piece;
+  }
+
+  if (x != kBoardSize - 1 || y != kBoardSize) return false;
+
+  if (!nextFenField(fen, pos, field) || field.size() != 1) return false;
+  Color parsedSide;
+  if (field[0] == 'w') {
+    parsedSide = Color::White;
+  } else if (field[0] == 'b') {
+    parsedSide = Color::Black;
+  } else {
+    return false;
+  }
+
+  if (!nextFenField(fen, pos, field)) return false;
+  bool parsedWCastleK = false;
+  bool parsedWCastleQ = false;
+  bool parsedBCastleK = false;
+  bool parsedBCastleQ = false;
+  if (field != "-") {
+    for (char c : field) {
+      switch (c) {
+        case 'K':
+          parsedWCastleK = true;
+          break;
+        case 'Q':
+          parsedWCastleQ = true;
+          break;
+        case 'k':
+          parsedBCastleK = true;
+          break;
+        case 'q':
+          parsedBCastleQ = true;
+          break;
+        default:
+          return false;
+      }
+    }
+  }
+
+  if (!nextFenField(fen, pos, field)) return false;
+  bool parsedHasEp = false;
+  int parsedEpX = -1;
+  int parsedEpY = -1;
+  if (field != "-") {
+    if (!parseFenSquare(field, parsedEpX, parsedEpY)) return false;
+    parsedHasEp = true;
+  }
+
+  for (int row = 0; row < kBoardSize; ++row) {
+    for (int file = 0; file < kBoardSize; ++file) {
+      board[row][file] = parsedBoard[row][file];
+    }
+  }
+
+  side = parsedSide;
+  wCastleK = parsedWCastleK;
+  wCastleQ = parsedWCastleQ;
+  bCastleK = parsedBCastleK;
+  bCastleQ = parsedBCastleQ;
+  hasEp = parsedHasEp;
+  epX = parsedEpX;
+  epY = parsedEpY;
+  histSize = 0;
+  return true;
 }
 
 bool Board::isInsideBoard(int x, int y) const {
@@ -461,14 +614,16 @@ bool Board::makeMove(const Move& move) {
     state.wasCastle = true;
     state.rookFromX = move.fromX;
     state.rookToX = move.fromX;
-    state.rookFromY = move.toY > move.fromY ? kKingsideRookFile : kQueensideRookFile;
+    state.rookFromY =
+        move.toY > move.fromY ? kKingsideRookFile : kQueensideRookFile;
     state.rookToY = move.toY > move.fromY ? kKingsideBishopFile : kQueenFile;
   }
 
   board[move.toX][move.toY] = state.placedPiece;
   board[move.fromX][move.fromY] = Piece::None;
   if (state.wasCastle) {
-    board[state.rookToX][state.rookToY] = board[state.rookFromX][state.rookFromY];
+    board[state.rookToX][state.rookToY] =
+        board[state.rookFromX][state.rookFromY];
     board[state.rookFromX][state.rookFromY] = Piece::None;
   }
 
@@ -497,7 +652,8 @@ bool Board::undoMove() {
   const MoveState& state = history[--histSize];
 
   if (state.wasCastle) {
-    board[state.rookFromX][state.rookFromY] = board[state.rookToX][state.rookToY];
+    board[state.rookFromX][state.rookFromY] =
+        board[state.rookToX][state.rookToY];
     board[state.rookToX][state.rookToY] = Piece::None;
   }
 

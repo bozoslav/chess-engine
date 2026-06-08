@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string_view>
+
 #include "move.h"
 
 class Board {
@@ -14,6 +16,7 @@ class Board {
   bool isKingInCheck() const;
   Piece at(int x, int y) const;
   bool makeMove(const Move& move);
+  bool setFromFen(std::string_view fen);
 
  private:
   struct MoveState {

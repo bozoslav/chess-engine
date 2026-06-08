@@ -1,5 +1,6 @@
 #include "movegen.h"
 
+#include <cstdint>
 #include <vector>
 
 std::vector<Move> genLegalMoves(Board& board) {
@@ -15,9 +16,8 @@ std::vector<Move> genLegalMoves(Board& board) {
 
       for (int x = 0; x < Board::kBoardSize; ++x) {
         for (int y = 0; y < Board::kBoardSize; ++y) {
-          const bool isPromoSquare =
-              pieceType(p) == PieceType::Pawn &&
-              (x == 0 || x == Board::kBoardSize - 1);
+          const bool isPromoSquare = pieceType(p) == PieceType::Pawn &&
+                                     (x == 0 || x == Board::kBoardSize - 1);
 
           if (isPromoSquare) {
             const PieceType promos[4] = {
@@ -51,10 +51,10 @@ std::vector<Move> genLegalMoves(Board& board) {
   return ret;
 }
 
-int perft(Board& board, int depth) {
+std::uint64_t perft(Board& board, int depth) {
   if (depth == 0) return 1;
 
-  int nodes = 0;
+  std::uint64_t nodes = 0;
 
   std::vector<Move> moves = genLegalMoves(board);
   for (Move move : moves) {
