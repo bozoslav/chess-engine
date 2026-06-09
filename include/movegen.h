@@ -1,9 +1,8 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
 
 #include "board.h"
 
-std::vector<Move> genLegalMoves(Board& board);
+void genLegalMoves(Board& board, MoveList& moves);
 std::uint64_t perft(Board& board, int depth);
