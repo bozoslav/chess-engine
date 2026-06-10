@@ -202,6 +202,8 @@ Board::Board() {
 
   rebuildBitboards();
   zobristKey = computeZobristKey();
+  keyHistory[0] = zobristKey;
+  keyHistorySize = 1;
   assert(bitboardsAreConsistent());
 }
 
@@ -298,6 +300,8 @@ bool Board::setFromFen(std::string_view fen) {
   histSize = 0;
   rebuildBitboards();
   zobristKey = computeZobristKey();
+  keyHistory[0] = zobristKey;
+  keyHistorySize = 1;
   assert(bitboardsAreConsistent());
   return true;
 }
@@ -728,6 +732,9 @@ bool Board::bitboardsAreConsistent() const {
       hasEp ? squareFromCoords(epX, epY) : static_cast<Square>(kNoSquare);
   if (epSquare != expectedEp) return false;
 
+  if (keyHistorySize <= 0 || keyHistorySize > kMaxHistory + 1) return false;
+  if (keyHistory[keyHistorySize - 1] != zobristKey) return false;
+
   return zobristKey == computeZobristKey();
 }
 
@@ -775,6 +782,7 @@ bool Board::makeMove(const Move& move) {
   state.prevEpY = epY;
   state.prevEpSquare = epSquare;
   state.prevZobristKey = zobristKey;
+  state.prevKeyHistorySize = keyHistorySize;
 
   const PieceType movingType = pieceType(movingPiece);
   const bool white = movingSide == Color::White;
@@ -847,6 +855,7 @@ bool Board::makeMove(const Move& move) {
     return false;
   }
 
+  keyHistory[keyHistorySize++] = zobristKey;
   assert(bitboardsAreConsistent());
   return true;
 }
@@ -879,6 +888,7 @@ bool Board::undoMove() {
   epY = state.prevEpY;
   epSquare = state.prevEpSquare;
   zobristKey = state.prevZobristKey;
+  keyHistorySize = state.prevKeyHistorySize;
 
   assert(bitboardsAreConsistent());
   return true;
@@ -960,3 +970,15 @@ bool Board::canCastleQueenSide(Color color) const {
 }
 
 std::uint64_t Board::key() const { return zobristKey; }
+
+int Board::repetitionCount() const {
+  int count = 0;
+  for (int index = keyHistorySize - 1; index >= 0; --index) {
+    if (keyHistory[index] == zobristKey) ++count;
+  }
+  return count;
+}
+
+bool Board::hasRepeatedPosition() const { return repetitionCount() >= 2; }
+
+bool Board::isThreefoldRepetition() const { return repetitionCount() >= 3; }

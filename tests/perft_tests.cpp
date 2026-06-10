@@ -1,5 +1,7 @@
 #include <cstdint>
 #include <iostream>
+#include <sstream>
+#include <string>
 #include <string_view>
 
 #include "board.h"
@@ -111,6 +113,16 @@ bool expectMakeUndoRestoresKey(const char* name, const char* fen,
   return ok;
 }
 
+bool applyUciMove(Board& board, std::string_view text) {
+  Move move;
+  return moveFromUci(board, text, move) && board.makeMove(move);
+}
+
+bool expectTextContains(const char* name, const std::string& text,
+                        std::string_view needle) {
+  return expectBool(name, text.find(needle) != std::string::npos, true);
+}
+
 bool runMoveEncodingAndHashTests() {
   bool ok = true;
 
@@ -172,6 +184,89 @@ bool runMoveEncodingAndHashTests() {
   ok &= expectMakeUndoRestoresKey("hash promotion make undo",
                                   "8/P7/8/8/8/8/8/k6K w - - 0 1",
                                   "a7a8q");
+
+  return ok;
+}
+
+bool runRepetitionTests() {
+  bool ok = true;
+
+  Board board;
+  ok &= expectBool("initial repetition count", board.repetitionCount(), 1);
+  ok &= expectBool("initial not repeated", board.hasRepeatedPosition(), false);
+
+  ok &= expectBool("rep move 1", applyUciMove(board, "g1f3"), true);
+  ok &= expectBool("rep move 2", applyUciMove(board, "g8f6"), true);
+  ok &= expectBool("rep move 3", applyUciMove(board, "f3g1"), true);
+  ok &= expectBool("rep move 4", applyUciMove(board, "f6g8"), true);
+  ok &= expectBool("one repetition cycle count", board.repetitionCount(), 2);
+  ok &= expectBool("position repeated once", board.hasRepeatedPosition(), true);
+  ok &= expectBool("not threefold yet", board.isThreefoldRepetition(), false);
+
+  ok &= expectBool("rep move 5", applyUciMove(board, "g1f3"), true);
+  ok &= expectBool("rep move 6", applyUciMove(board, "g8f6"), true);
+  ok &= expectBool("rep move 7", applyUciMove(board, "f3g1"), true);
+  ok &= expectBool("rep move 8", applyUciMove(board, "f6g8"), true);
+  ok &= expectBool("threefold count", board.repetitionCount(), 3);
+  ok &= expectBool("threefold repetition", board.isThreefoldRepetition(), true);
+
+  const std::uint64_t repeatedKey = board.key();
+  ok &= expectBool("undo repeated move", board.undoMove(), true);
+  ok &= expectBool("undo changes key", board.key() != repeatedKey, true);
+  ok &= expectBool("reapply repeated move", applyUciMove(board, "f6g8"), true);
+  ok &= expectBool("reapply restores threefold", board.isThreefoldRepetition(),
+                   true);
+
+  Board fromCommand;
+  ok &= expectBool("position command with moves",
+                   setPositionFromUci(
+                       fromCommand,
+                       "position startpos moves g1f3 g8f6 f3g1 f6g8"),
+                   true);
+  ok &= expectBool("position command repetition",
+                   fromCommand.hasRepeatedPosition(), true);
+
+  return ok;
+}
+
+bool runUciProtocolTests() {
+  bool ok = true;
+
+  Board board;
+  ok &= expectBool("set startpos command",
+                   setPositionFromUci(board, "position startpos moves e2e4"),
+                   true);
+  ok &= expectBool("set startpos side", board.sideToMove() == Color::Black,
+                   true);
+
+  ok &= expectBool("set fen command",
+                   setPositionFromUci(
+                       board,
+                       "position fen 8/8/8/8/8/8/8/k6K w - - 0 1"),
+                   true);
+  ok &= expectBool("reject bad position",
+                   setPositionFromUci(board, "position startpos moves e2e5"),
+                   false);
+
+  std::istringstream input(
+      "uci\n"
+      "isready\n"
+      "position startpos moves e2e4 e7e5\n"
+      "go depth 1\n"
+      "go perft 2\n"
+      "quit\n");
+  std::ostringstream output;
+  runUci(input, output);
+  const std::string text = output.str();
+  ok &= expectTextContains("uci id", text, "id name chess_engine");
+  ok &= expectTextContains("uci ok", text, "uciok");
+  ok &= expectTextContains("uci ready", text, "readyok");
+  ok &= expectTextContains("uci bestmove", text, "bestmove ");
+  ok &= expectTextContains("uci perft", text, "perft depth 2 nodes ");
+
+  std::ostringstream benchOutput;
+  ok &= expectBool("bench command", runBench(benchOutput), true);
+  ok &= expectTextContains("bench total", benchOutput.str(), "bench total");
 
   return ok;
 }
@@ -321,6 +416,8 @@ int main() {
   };
 
   bool ok = runMoveEncodingAndHashTests();
+  ok &= runRepetitionTests();
+  ok &= runUciProtocolTests();
   ok &= runRuleSmokeTests();
   for (const PerftPosition& position : positions) {
     ok &= runPerftPosition(position);

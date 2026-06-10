@@ -28,6 +28,9 @@ class Board {
   bool canCastleKingSide(Color color) const;
   bool canCastleQueenSide(Color color) const;
   std::uint64_t key() const;
+  int repetitionCount() const;
+  bool hasRepeatedPosition() const;
+  bool isThreefoldRepetition() const;
   bool makeMove(const Move& move);
   bool setFromFen(std::string_view fen);
 
@@ -55,6 +58,7 @@ class Board {
     int prevEpY;
     Square prevEpSquare;
     std::uint64_t prevZobristKey;
+    int prevKeyHistorySize;
   };
 
   static constexpr int kMaxHistory = 1024;
@@ -99,5 +103,7 @@ class Board {
   Square epSquare;
   std::uint64_t zobristKey;
   MoveState history[kMaxHistory];
+  std::uint64_t keyHistory[kMaxHistory + 1];
   int histSize;
+  int keyHistorySize;
 };
