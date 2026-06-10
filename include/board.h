@@ -1,12 +1,16 @@
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 
+#include "bitboard.h"
 #include "move.h"
 
 class Board {
  public:
   static constexpr int kBoardSize = 8;
+  static constexpr int kColorCount = 2;
+  static constexpr int kPieceTypeCount = 7;
 
   Board();
 
@@ -15,6 +19,15 @@ class Board {
   Color sideToMove() const;
   bool isKingInCheck() const;
   Piece at(int x, int y) const;
+  Bitboard pieces(Color color, PieceType type) const;
+  Bitboard occupancy(Color color) const;
+  Bitboard allPieces() const;
+  Square kingSquare(Color color) const;
+  bool hasEnPassant() const;
+  Square enPassantSquare() const;
+  bool canCastleKingSide(Color color) const;
+  bool canCastleQueenSide(Color color) const;
+  std::uint64_t key() const;
   bool makeMove(const Move& move);
   bool setFromFen(std::string_view fen);
 
@@ -40,6 +53,8 @@ class Board {
     bool prevHasEp;
     int prevEpX;
     int prevEpY;
+    Square prevEpSquare;
+    std::uint64_t prevZobristKey;
   };
 
   static constexpr int kMaxHistory = 1024;
@@ -59,8 +74,20 @@ class Board {
   bool isKingInCheckForSide(Color kingColor) const;
   void updateCastlingRights(const Move& move, Piece movingPiece,
                             Piece capturedPiece);
+  void clearBitboards();
+  void addPieceToBitboards(Piece piece, int x, int y);
+  void removePieceFromBitboards(Piece piece, int x, int y);
+  void rebuildBitboards();
+  void putPiece(int x, int y, Piece piece);
+  int castlingRightsMask() const;
+  std::uint64_t computeZobristKey() const;
+  bool bitboardsAreConsistent() const;
 
   Piece board[kBoardSize][kBoardSize];
+  Bitboard pieceBB[kColorCount][kPieceTypeCount];
+  Bitboard occupancyBB[kColorCount];
+  Bitboard allBB;
+  Square kingSq[kColorCount];
   Color side;
   bool wCastleK;
   bool wCastleQ;
@@ -69,6 +96,8 @@ class Board {
   bool hasEp;
   int epX;
   int epY;
+  Square epSquare;
+  std::uint64_t zobristKey;
   MoveState history[kMaxHistory];
   int histSize;
 };

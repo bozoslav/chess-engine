@@ -6,15 +6,13 @@
 
 namespace {
 
-constexpr int kPieceTypeCount = 7;
+constexpr Square kNoSquare = -1;
 
-struct PositionBitboards {
-  Bitboard pieces[2][kPieceTypeCount] = {};
-  Bitboard occupancy[2] = {};
-  Bitboard all = 0;
-};
+constexpr Bitboard squareBit(Square square) { return bitboard::bit(square); }
 
-constexpr int colorIndex(Color color) { return static_cast<int>(color); }
+constexpr bool isValidSquare(Square square) {
+  return square >= 0 && square < bitboard::kSquareCount;
+}
 
 constexpr bool isPromotionRank(Color side, Square square) {
   const int rank = bitboard::rankOf(square);
@@ -28,44 +26,20 @@ constexpr bool isPawnStartRank(Color side, Square square) {
          (side == Color::Black && rank == 6);
 }
 
-PositionBitboards buildBitboards(const Board& board) {
-  PositionBitboards bitboards;
-
-  for (int x = 0; x < Board::kBoardSize; ++x) {
-    for (int y = 0; y < Board::kBoardSize; ++y) {
-      const Piece piece = board.at(x, y);
-      if (piece == Piece::None) continue;
-
-      const Color color = isWhitePiece(piece) ? Color::White : Color::Black;
-      const PieceType type = pieceType(piece);
-      const Bitboard pieceBit = bitboard::bit(bitboard::squareFromCoords(x, y));
-      const int sideIndex = colorIndex(color);
-      const int typeIndex = static_cast<int>(type);
-
-      bitboards.pieces[sideIndex][typeIndex] |= pieceBit;
-      bitboards.occupancy[sideIndex] |= pieceBit;
-      bitboards.all |= pieceBit;
-    }
-  }
-
-  return bitboards;
+Piece pieceAt(const Board& board, Square square) {
+  return board.at(bitboard::coordX(square), bitboard::coordY(square));
 }
 
-void pushLegalMove(Board& board, MoveList& moves, Square from, Square to,
-                   PieceType promotion = PieceType::None) {
-  const Move move{bitboard::coordX(from), bitboard::coordY(from),
-                  bitboard::coordX(to), bitboard::coordY(to), promotion};
-
-  if (board.makeMove(move)) {
-    moves.push(move);
-    board.undoMove();
-  }
+void pushMove(MoveList& moves, Square from, Square to,
+              MoveFlag flag = MoveFlag::Quiet) {
+  moves.push(Move::fromSquares(from, to, flag));
 }
 
-void pushPawnMove(Board& board, MoveList& moves, Color side, Square from,
-                  Square to) {
+void pushPawnMove(MoveList& moves, Color side, Square from, Square to,
+                  bool isCapture) {
   if (!isPromotionRank(side, to)) {
-    pushLegalMove(board, moves, from, to);
+    pushMove(moves, from, to, isCapture ? MoveFlag::Capture
+                                        : MoveFlag::Quiet);
     return;
   }
 
@@ -77,77 +51,327 @@ void pushPawnMove(Board& board, MoveList& moves, Color side, Square from,
   };
 
   for (const PieceType promotion : kPromotions) {
-    pushLegalMove(board, moves, from, to, promotion);
+    pushMove(moves, from, to, Move::promotionFlag(promotion, isCapture));
   }
 }
 
-void genPawnMoves(Board& board, MoveList& moves,
-                  const PositionBitboards& bitboards, Color side) {
-  const int sideIndex = colorIndex(side);
-  const Bitboard own = bitboards.occupancy[sideIndex];
-  Bitboard pawns =
-      bitboards.pieces[sideIndex][static_cast<int>(PieceType::Pawn)];
+Bitboard attackersTo(const Board& board, Square square, Color attackingColor,
+                     Bitboard occupancy) {
+  const Bitboard pawns = board.pieces(attackingColor, PieceType::Pawn);
+  const Bitboard knights = board.pieces(attackingColor, PieceType::Knight);
+  const Bitboard bishops = board.pieces(attackingColor, PieceType::Bishop);
+  const Bitboard rooks = board.pieces(attackingColor, PieceType::Rook);
+  const Bitboard queens = board.pieces(attackingColor, PieceType::Queen);
+  const Bitboard king = board.pieces(attackingColor, PieceType::King);
+
+  return (AttackTables::pawnAttacks(oppositeColor(attackingColor), square) &
+          pawns) |
+         (AttackTables::knightAttacks(square) & knights) |
+         (AttackTables::bishopAttacks(square, occupancy) & (bishops | queens)) |
+         (AttackTables::rookAttacks(square, occupancy) & (rooks | queens)) |
+         (AttackTables::kingAttacks(square) & king);
+}
+
+bool isSquareAttacked(const Board& board, Square square, Color attackingColor,
+                      Bitboard occupancy) {
+  return attackersTo(board, square, attackingColor, occupancy) != 0;
+}
+
+bool areAligned(Square first, Square second) {
+  const int firstRank = bitboard::rankOf(first);
+  const int firstFile = bitboard::fileOf(first);
+  const int secondRank = bitboard::rankOf(second);
+  const int secondFile = bitboard::fileOf(second);
+  const int dr = secondRank - firstRank;
+  const int df = secondFile - firstFile;
+
+  return dr == 0 || df == 0 || dr == df || dr == -df;
+}
+
+Bitboard squaresBetween(Square first, Square second) {
+  if (!areAligned(first, second)) return 0;
+
+  const int firstRank = bitboard::rankOf(first);
+  const int firstFile = bitboard::fileOf(first);
+  const int secondRank = bitboard::rankOf(second);
+  const int secondFile = bitboard::fileOf(second);
+  const int stepRank = (secondRank > firstRank) - (secondRank < firstRank);
+  const int stepFile = (secondFile > firstFile) - (secondFile < firstFile);
+
+  Bitboard mask = 0;
+  int rank = firstRank + stepRank;
+  int file = firstFile + stepFile;
+  while (rank != secondRank || file != secondFile) {
+    mask |= squareBit(rank * bitboard::kFileCount + file);
+    rank += stepRank;
+    file += stepFile;
+  }
+
+  return mask;
+}
+
+bool isOrthogonalDirection(int dr, int df) { return dr == 0 || df == 0; }
+
+bool isDiagonalDirection(int dr, int df) { return dr != 0 && df != 0; }
+
+bool sliderMatchesDirection(PieceType type, int dr, int df) {
+  if (type == PieceType::Queen) return true;
+  if (isOrthogonalDirection(dr, df)) return type == PieceType::Rook;
+  if (isDiagonalDirection(dr, df)) return type == PieceType::Bishop;
+  return false;
+}
+
+struct PinInfo {
+  Bitboard pinned = 0;
+  Bitboard mask[bitboard::kSquareCount] = {};
+};
+
+PinInfo computePins(const Board& board, Color side) {
+  static constexpr int kDirections[8][2] = {
+      {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1},
+  };
+
+  PinInfo pins;
+  const Color enemy = oppositeColor(side);
+  const Square kingSquare = board.kingSquare(side);
+  const int kingRank = bitboard::rankOf(kingSquare);
+  const int kingFile = bitboard::fileOf(kingSquare);
+
+  for (const auto& direction : kDirections) {
+    const int dr = direction[0];
+    const int df = direction[1];
+    Square blocker = kNoSquare;
+    Bitboard ray = 0;
+
+    int rank = kingRank + dr;
+    int file = kingFile + df;
+    while (rank >= 0 && rank < bitboard::kRankCount && file >= 0 &&
+           file < bitboard::kFileCount) {
+      const Square square = rank * bitboard::kFileCount + file;
+      const Piece piece = pieceAt(board, square);
+
+      if (piece != Piece::None) {
+        if (matchesColor(piece, side)) {
+          if (blocker != kNoSquare) break;
+          blocker = square;
+        } else {
+          if (blocker != kNoSquare && matchesColor(piece, enemy) &&
+              sliderMatchesDirection(pieceType(piece), dr, df)) {
+            pins.pinned |= squareBit(blocker);
+            pins.mask[blocker] = ray | squareBit(square);
+          }
+          break;
+        }
+      }
+
+      ray |= squareBit(square);
+      rank += dr;
+      file += df;
+    }
+  }
+
+  return pins;
+}
+
+Bitboard evasionMaskForSingleCheck(const Board& board, Square kingSquare,
+                                   Square checkerSquare) {
+  const Piece checker = pieceAt(board, checkerSquare);
+  const PieceType checkerType = pieceType(checker);
+  if (checkerType == PieceType::Bishop || checkerType == PieceType::Rook ||
+      checkerType == PieceType::Queen) {
+    return squaresBetween(kingSquare, checkerSquare) | squareBit(checkerSquare);
+  }
+
+  return squareBit(checkerSquare);
+}
+
+Bitboard legalTargetMaskForPiece(Square from, Bitboard targets,
+                                 const PinInfo& pins, Bitboard evasionMask) {
+  if ((pins.pinned & squareBit(from)) != 0) {
+    targets &= pins.mask[from];
+  }
+
+  targets &= evasionMask;
+  return targets;
+}
+
+void generateKingMoves(const Board& board, MoveList& moves, Color side,
+                       Bitboard all, Bitboard own, Bitboard enemyKing,
+                       Bitboard enemyPieces) {
+  const Color enemy = oppositeColor(side);
+  const Square from = board.kingSquare(side);
+  const Bitboard fromBit = squareBit(from);
+  Bitboard targets = AttackTables::kingAttacks(from) & ~own & ~enemyKing;
+  const Bitboard occupancyWithoutKing = all & ~fromBit;
+
+  while (targets != 0) {
+    const Square to = bitboard::popLsb(targets);
+    if (!isSquareAttacked(board, to, enemy, occupancyWithoutKing)) {
+      pushMove(moves, from, to,
+               (enemyPieces & squareBit(to)) != 0 ? MoveFlag::Capture
+                                                  : MoveFlag::Quiet);
+    }
+  }
+}
+
+void generateCastling(const Board& board, MoveList& moves, Color side,
+                      Bitboard all, Bitboard checkers) {
+  if (checkers != 0) return;
+
+  const Color enemy = oppositeColor(side);
+  const Square kingFrom = board.kingSquare(side);
+  const Square expectedKingFrom = side == Color::White ? 4 : 60;
+  if (kingFrom != expectedKingFrom) return;
+
+  const Square kingSideRook = side == Color::White ? 7 : 63;
+  const Square queenSideRook = side == Color::White ? 0 : 56;
+
+  if (board.canCastleKingSide(side) &&
+      (board.pieces(side, PieceType::Rook) & squareBit(kingSideRook)) != 0) {
+    const Square transit = kingFrom + 1;
+    const Square target = kingFrom + 2;
+    const Bitboard emptyMask = squareBit(transit) | squareBit(target);
+    if ((all & emptyMask) == 0 &&
+        !isSquareAttacked(board, transit, enemy, all) &&
+        !isSquareAttacked(board, target, enemy, all)) {
+      pushMove(moves, kingFrom, target, MoveFlag::KingCastle);
+    }
+  }
+
+  if (board.canCastleQueenSide(side) &&
+      (board.pieces(side, PieceType::Rook) & squareBit(queenSideRook)) != 0) {
+    const Square transit = kingFrom - 1;
+    const Square target = kingFrom - 2;
+    const Square gap = kingFrom - 3;
+    const Bitboard emptyMask =
+        squareBit(transit) | squareBit(target) | squareBit(gap);
+    if ((all & emptyMask) == 0 &&
+        !isSquareAttacked(board, transit, enemy, all) &&
+        !isSquareAttacked(board, target, enemy, all)) {
+      pushMove(moves, kingFrom, target, MoveFlag::QueenCastle);
+    }
+  }
+}
+
+void generatePawnMoves(const Board& board, MoveList& moves, Color side,
+                       const PinInfo& pins, Bitboard evasionMask,
+                       Bitboard checkers) {
+  const Color enemy = oppositeColor(side);
+  const Bitboard all = board.allPieces();
+  const Bitboard enemyKing = board.pieces(enemy, PieceType::King);
+  const Bitboard enemyPieces = board.occupancy(enemy) & ~enemyKing;
+  const Square kingSquare = board.kingSquare(side);
   const int forward = side == Color::White ? 8 : -8;
+  Bitboard pawns = board.pieces(side, PieceType::Pawn);
 
   while (pawns != 0) {
     const Square from = bitboard::popLsb(pawns);
-    const Square oneForward = from + forward;
+    const Bitboard fromBit = squareBit(from);
+    const bool pinned = (pins.pinned & fromBit) != 0;
 
-    if (oneForward >= 0 && oneForward < bitboard::kSquareCount &&
-        (bitboards.all & bitboard::bit(oneForward)) == 0) {
-      pushPawnMove(board, moves, side, from, oneForward);
+    const Square oneForward = from + forward;
+    if (isValidSquare(oneForward) && (all & squareBit(oneForward)) == 0) {
+      Bitboard quietTargets = squareBit(oneForward);
+      quietTargets =
+          legalTargetMaskForPiece(from, quietTargets, pins, evasionMask);
+      if (quietTargets != 0) {
+        pushPawnMove(moves, side, from, oneForward, false);
+      }
 
       const Square twoForward = from + 2 * forward;
-      if (isPawnStartRank(side, from) &&
-          (bitboards.all & bitboard::bit(twoForward)) == 0) {
-        pushLegalMove(board, moves, from, twoForward);
+      if (isPawnStartRank(side, from) && (all & squareBit(twoForward)) == 0) {
+        Bitboard doubleTarget = squareBit(twoForward);
+        doubleTarget =
+            legalTargetMaskForPiece(from, doubleTarget, pins, evasionMask);
+        if (doubleTarget != 0) {
+          pushMove(moves, from, twoForward, MoveFlag::DoublePawnPush);
+        }
       }
     }
 
-    Bitboard captures = AttackTables::pawnAttacks(side, from) & ~own;
+    Bitboard captures = AttackTables::pawnAttacks(side, from) & enemyPieces;
+    captures = legalTargetMaskForPiece(from, captures, pins, evasionMask);
     while (captures != 0) {
-      const Square to = bitboard::popLsb(captures);
-      pushPawnMove(board, moves, side, from, to);
+      pushPawnMove(moves, side, from, bitboard::popLsb(captures), true);
+    }
+
+    if (!board.hasEnPassant()) continue;
+    const Square epTarget = board.enPassantSquare();
+    if ((AttackTables::pawnAttacks(side, from) & squareBit(epTarget)) == 0) {
+      continue;
+    }
+
+    const Square capturedPawnSquare =
+        epTarget + (side == Color::White ? -8 : 8);
+    if (!isValidSquare(capturedPawnSquare)) continue;
+    const Piece capturedPawn = pieceAt(board, capturedPawnSquare);
+    if (capturedPawn == Piece::None || !matchesColor(capturedPawn, enemy) ||
+        pieceType(capturedPawn) != PieceType::Pawn) {
+      continue;
+    }
+
+    const Bitboard epTargetBit = squareBit(epTarget);
+    const Bitboard capturedPawnBit = squareBit(capturedPawnSquare);
+    const bool resolvesCheck = checkers == 0 ||
+                               (checkers & capturedPawnBit) != 0 ||
+                               (evasionMask & epTargetBit) != 0;
+    if (!resolvesCheck) continue;
+
+    if (pinned && (pins.mask[from] & epTargetBit) == 0) continue;
+
+    Bitboard occupancyAfter = all;
+    occupancyAfter &= ~fromBit;
+    occupancyAfter &= ~capturedPawnBit;
+    occupancyAfter |= epTargetBit;
+    if (!isSquareAttacked(board, kingSquare, enemy, occupancyAfter)) {
+      pushMove(moves, from, epTarget, MoveFlag::EnPassant);
     }
   }
 }
 
-void genAttackMoves(Board& board, MoveList& moves, Bitboard pieces,
-                    Bitboard own, Bitboard all, PieceType type) {
+void generatePieceMoves(const Board& board, MoveList& moves, Color side,
+                        PieceType type, const PinInfo& pins,
+                        Bitboard evasionMask) {
+  const Color enemy = oppositeColor(side);
+  const Bitboard own = board.occupancy(side);
+  const Bitboard enemyKing = board.pieces(enemy, PieceType::King);
+  const Bitboard all = board.allPieces();
+  Bitboard pieces = board.pieces(side, type);
+
   while (pieces != 0) {
     const Square from = bitboard::popLsb(pieces);
-    Bitboard attacks = 0;
+    Bitboard targets = 0;
 
     switch (type) {
       case PieceType::Knight:
-        attacks = AttackTables::knightAttacks(from);
+        targets = AttackTables::knightAttacks(from);
         break;
       case PieceType::Bishop:
-        attacks = AttackTables::bishopAttacks(from, all);
+        targets = AttackTables::bishopAttacks(from, all);
         break;
       case PieceType::Rook:
-        attacks = AttackTables::rookAttacks(from, all);
+        targets = AttackTables::rookAttacks(from, all);
         break;
       case PieceType::Queen:
-        attacks = AttackTables::queenAttacks(from, all);
-        break;
-      case PieceType::King:
-        attacks = AttackTables::kingAttacks(from);
+        targets = AttackTables::queenAttacks(from, all);
         break;
       case PieceType::Pawn:
+      case PieceType::King:
       case PieceType::None:
       default:
         break;
     }
 
-    attacks &= ~own;
-    while (attacks != 0) {
-      pushLegalMove(board, moves, from, bitboard::popLsb(attacks));
-    }
+    targets &= ~own;
+    targets &= ~enemyKing;
+    targets = legalTargetMaskForPiece(from, targets, pins, evasionMask);
 
-    if (type == PieceType::King && (from == 4 || from == 60)) {
-      pushLegalMove(board, moves, from, from + 2);
-      pushLegalMove(board, moves, from, from - 2);
+    while (targets != 0) {
+      const Square to = bitboard::popLsb(targets);
+      pushMove(moves, from, to,
+               (board.occupancy(enemy) & squareBit(to)) != 0
+                   ? MoveFlag::Capture
+                   : MoveFlag::Quiet);
     }
   }
 }
@@ -158,36 +382,36 @@ void ensureAttackTablesInitialized() {
 
 }  // namespace
 
-void genLegalMoves(Board& board, MoveList& moves) {
+void genLegalMoves(const Board& board, MoveList& moves) {
   ensureAttackTablesInitialized();
-
-  const Color side = board.sideToMove();
-  const int sideIndex = colorIndex(side);
-  const PositionBitboards bitboards = buildBitboards(board);
-  const Bitboard own = bitboards.occupancy[sideIndex];
-  const Bitboard all = bitboards.all;
-
   moves.clear();
 
-  genPawnMoves(board, moves, bitboards, side);
-  genAttackMoves(
-      board, moves,
-      bitboards.pieces[sideIndex][static_cast<int>(PieceType::Knight)], own,
-      all, PieceType::Knight);
-  genAttackMoves(
-      board, moves,
-      bitboards.pieces[sideIndex][static_cast<int>(PieceType::Bishop)], own,
-      all, PieceType::Bishop);
-  genAttackMoves(board, moves,
-                 bitboards.pieces[sideIndex][static_cast<int>(PieceType::Rook)],
-                 own, all, PieceType::Rook);
-  genAttackMoves(
-      board, moves,
-      bitboards.pieces[sideIndex][static_cast<int>(PieceType::Queen)], own, all,
-      PieceType::Queen);
-  genAttackMoves(board, moves,
-                 bitboards.pieces[sideIndex][static_cast<int>(PieceType::King)],
-                 own, all, PieceType::King);
+  const Color side = board.sideToMove();
+  const Color enemy = oppositeColor(side);
+  const Bitboard all = board.allPieces();
+  const Bitboard own = board.occupancy(side);
+  const Bitboard enemyKing = board.pieces(enemy, PieceType::King);
+  const Square kingSquare = board.kingSquare(side);
+  const Bitboard checkers = attackersTo(board, kingSquare, enemy, all);
+
+  generateKingMoves(board, moves, side, all, own, enemyKing,
+                    board.occupancy(enemy) & ~enemyKing);
+  generateCastling(board, moves, side, all, checkers);
+
+  if (bitboard::popcount(checkers) >= 2) return;
+
+  const PinInfo pins = computePins(board, side);
+  Bitboard evasionMask = ~Bitboard{0};
+  if (checkers != 0) {
+    const Square checker = bitboard::lsb(checkers);
+    evasionMask = evasionMaskForSingleCheck(board, kingSquare, checker);
+  }
+
+  generatePawnMoves(board, moves, side, pins, evasionMask, checkers);
+  generatePieceMoves(board, moves, side, PieceType::Knight, pins, evasionMask);
+  generatePieceMoves(board, moves, side, PieceType::Bishop, pins, evasionMask);
+  generatePieceMoves(board, moves, side, PieceType::Rook, pins, evasionMask);
+  generatePieceMoves(board, moves, side, PieceType::Queen, pins, evasionMask);
 }
 
 std::uint64_t perft(Board& board, int depth) {
@@ -200,7 +424,7 @@ std::uint64_t perft(Board& board, int depth) {
   if (moves.overflowed()) return 0;
 
   for (const Move move : moves) {
-    board.makeMove(move);
+    if (!board.makeMove(move)) return 0;
     nodes += perft(board, depth - 1);
     board.undoMove();
   }

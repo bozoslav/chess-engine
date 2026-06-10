@@ -11,6 +11,7 @@ add_library(chess_engine_core
   src/board.cpp
   src/types.cpp
   src/movegen.cpp
+  src/uci.cpp
 )
 
 target_include_directories(chess_engine_core PUBLIC include)

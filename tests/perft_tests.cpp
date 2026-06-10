@@ -1,8 +1,10 @@
 #include <cstdint>
 #include <iostream>
+#include <string_view>
 
 #include "board.h"
 #include "movegen.h"
+#include "uci.h"
 
 namespace {
 
@@ -30,6 +32,148 @@ bool expectBool(const char* name, bool actual, bool expected) {
   std::cout << "[FAIL] " << name << ": expected " << expected << ", got "
             << actual << '\n';
   return false;
+}
+
+bool containsMove(const MoveList& moves, int fromX, int fromY, int toX, int toY,
+                  PieceType promo = PieceType::None) {
+  for (const Move move : moves) {
+    if (move.fromX() == fromX && move.fromY() == fromY && move.toX() == toX &&
+        move.toY() == toY && move.promo() == promo) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool expectGeneratedMove(const char* name, const char* fen, int fromX,
+                         int fromY, int toX, int toY, bool expected) {
+  Board board;
+  if (!board.setFromFen(fen)) {
+    std::cout << "[FAIL] " << name << ": invalid FEN\n";
+    return false;
+  }
+
+  MoveList moves;
+  genLegalMoves(board, moves);
+  const bool actual = containsMove(moves, fromX, fromY, toX, toY);
+  return expectBool(name, actual, expected);
+}
+
+bool expectUciMove(const char* name, const char* fen, std::string_view text,
+                   MoveFlag expectedFlag,
+                   PieceType expectedPromotion = PieceType::None) {
+  Board board;
+  if (!board.setFromFen(fen)) {
+    std::cout << "[FAIL] " << name << ": invalid FEN\n";
+    return false;
+  }
+
+  Move move;
+  bool ok = expectBool(name, moveFromUci(board, text, move), true);
+  if (!ok) return false;
+
+  ok &= expectBool("uci round trip", move.toUci() == text, true);
+  ok &= expectBool("uci flag", move.flag() == expectedFlag, true);
+  ok &= expectBool("uci promotion", move.promo() == expectedPromotion, true);
+  return ok;
+}
+
+bool expectRejectedUciMove(const char* name, const char* fen,
+                           std::string_view text) {
+  Board board;
+  if (!board.setFromFen(fen)) {
+    std::cout << "[FAIL] " << name << ": invalid FEN\n";
+    return false;
+  }
+
+  Move move;
+  return expectBool(name, moveFromUci(board, text, move), false);
+}
+
+bool expectMakeUndoRestoresKey(const char* name, const char* fen,
+                               std::string_view text) {
+  Board board;
+  if (!board.setFromFen(fen)) {
+    std::cout << "[FAIL] " << name << ": invalid FEN\n";
+    return false;
+  }
+
+  Move move;
+  bool ok = expectBool(name, moveFromUci(board, text, move), true);
+  if (!ok) return false;
+
+  const std::uint64_t initialKey = board.key();
+  ok &= expectBool("hash make move", board.makeMove(move), true);
+  ok &= expectBool("hash changes after move", board.key() != initialKey, true);
+  ok &= expectBool("hash undo move", board.undoMove(), true);
+  ok &= expectBool("hash restored after undo", board.key() == initialKey, true);
+  return ok;
+}
+
+bool runMoveEncodingAndHashTests() {
+  bool ok = true;
+
+  Move doublePush(6, 4, 4, 4, MoveFlag::DoublePawnPush);
+  ok &= expectBool("move uci write", doublePush.toUci() == "e2e4", true);
+  ok &= expectBool("move from square",
+                   doublePush.fromSquare() == bitboard::squareFromCoords(6, 4),
+                   true);
+  ok &= expectBool("move double flag", doublePush.isDoublePawnPush(), true);
+  ok &= expectBool("move size stays 16-bit",
+                   sizeof(Move) == sizeof(std::uint16_t), true);
+
+  Board start;
+  Board fenStart;
+  ok &= expectBool("load startpos for hash", fenStart.setFromFen(kStartFen),
+                   true);
+  ok &= expectBool("constructor and FEN hash match",
+                   start.key() == fenStart.key(), true);
+
+  Board blackToMove;
+  ok &= expectBool("load black-to-move FEN",
+                   blackToMove.setFromFen(
+                       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/"
+                       "RNBQKBNR b KQkq - 0 1"),
+                   true);
+  ok &= expectBool("side-to-move changes hash",
+                   blackToMove.key() != fenStart.key(), true);
+
+  ok &= expectUciMove("uci quiet knight", kStartFen, "g1f3",
+                      MoveFlag::Quiet);
+  ok &= expectUciMove("uci double pawn push", kStartFen, "e2e4",
+                      MoveFlag::DoublePawnPush);
+  ok &= expectUciMove("uci capture",
+                      "8/8/8/3p4/4P3/8/8/k6K w - - 0 1", "e4d5",
+                      MoveFlag::Capture);
+  ok &= expectUciMove("uci castle",
+                      "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1",
+                      MoveFlag::KingCastle);
+  ok &= expectUciMove("uci en passant",
+                      "k7/8/8/3pP3/8/8/8/7K w - d6 0 1", "e5d6",
+                      MoveFlag::EnPassant);
+  ok &= expectUciMove("uci promotion",
+                      "8/P7/8/8/8/8/8/k6K w - - 0 1", "a7a8q",
+                      MoveFlag::QueenPromotion, PieceType::Queen);
+  ok &= expectUciMove("uci promotion capture",
+                      "1r6/P7/8/8/8/8/8/k6K w - - 0 1", "a7b8q",
+                      MoveFlag::QueenPromotionCapture, PieceType::Queen);
+  ok &= expectRejectedUciMove("reject illegal uci", kStartFen, "e2e5");
+
+  ok &= expectMakeUndoRestoresKey("hash quiet make undo", kStartFen, "g1f3");
+  ok &= expectMakeUndoRestoresKey("hash double push make undo", kStartFen,
+                                  "e2e4");
+  ok &= expectMakeUndoRestoresKey(
+      "hash castle make undo",
+      "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1");
+  ok &= expectMakeUndoRestoresKey(
+      "hash en passant make undo", "k7/8/8/3pP3/8/8/8/7K w - d6 0 1",
+      "e5d6");
+  ok &= expectMakeUndoRestoresKey("hash promotion make undo",
+                                  "8/P7/8/8/8/8/8/k6K w - - 0 1",
+                                  "a7a8q");
+
+  return ok;
 }
 
 bool runRuleSmokeTests() {
@@ -78,6 +222,15 @@ bool runRuleSmokeTests() {
 
   Board fenTest;
   ok &= expectBool("load startpos FEN", fenTest.setFromFen(kStartFen), true);
+
+  ok &= expectGeneratedMove("double pawn push blocks bishop check",
+                            "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/"
+                            "R2Q1RK1 w kq - 0 1",
+                            6, 3, 4, 3, true);
+
+  ok &= expectGeneratedMove("reject en passant discovered check",
+                            "k7/8/8/K2pP2r/8/8/8/8 w - d6 0 1", 3, 4, 2, 3,
+                            false);
 
   return ok;
 }
@@ -167,7 +320,8 @@ int main() {
       },
   };
 
-  bool ok = runRuleSmokeTests();
+  bool ok = runMoveEncodingAndHashTests();
+  ok &= runRuleSmokeTests();
   for (const PerftPosition& position : positions) {
     ok &= runPerftPosition(position);
   }

@@ -1,10 +1,12 @@
 #include "board.h"
 
+#include <cassert>
 #include <cmath>
 #include <iostream>
 #include <string_view>
 
 #include "types.h"
+#include "zobrist.h"
 
 namespace {
 
@@ -21,6 +23,17 @@ constexpr int kKingFile = 4;
 constexpr int kKingsideBishopFile = 5;
 constexpr int kKingsideKnightFile = 6;
 constexpr int kKingsideRookFile = Board::kBoardSize - 1;
+constexpr Square kNoSquare = -1;
+
+constexpr int colorIndex(Color color) { return static_cast<int>(color); }
+
+Square squareFromCoords(int x, int y) {
+  return bitboard::squareFromCoords(x, y);
+}
+
+Color colorOfPiece(Piece piece) {
+  return isWhitePiece(piece) ? Color::White : Color::Black;
+}
 
 bool isPromoPiece(PieceType type) {
   return type == PieceType::Queen || type == PieceType::Rook ||
@@ -184,7 +197,12 @@ Board::Board() {
   hasEp = false;
   epX = -1;
   epY = -1;
+  epSquare = kNoSquare;
   histSize = 0;
+
+  rebuildBitboards();
+  zobristKey = computeZobristKey();
+  assert(bitboardsAreConsistent());
 }
 
 bool Board::setFromFen(std::string_view fen) {
@@ -276,7 +294,11 @@ bool Board::setFromFen(std::string_view fen) {
   hasEp = parsedHasEp;
   epX = parsedEpX;
   epY = parsedEpY;
+  epSquare = parsedHasEp ? squareFromCoords(parsedEpX, parsedEpY) : kNoSquare;
   histSize = 0;
+  rebuildBitboards();
+  zobristKey = computeZobristKey();
+  assert(bitboardsAreConsistent());
   return true;
 }
 
@@ -547,6 +569,168 @@ void Board::updateCastlingRights(const Move& move, Piece movingPiece,
   }
 }
 
+void Board::clearBitboards() {
+  for (int color = 0; color < kColorCount; ++color) {
+    occupancyBB[color] = 0;
+    for (int type = 0; type < kPieceTypeCount; ++type) {
+      pieceBB[color][type] = 0;
+    }
+    kingSq[color] = kNoSquare;
+  }
+
+  allBB = 0;
+}
+
+void Board::addPieceToBitboards(Piece piece, int x, int y) {
+  if (piece == Piece::None) return;
+
+  const Color color = colorOfPiece(piece);
+  const PieceType type = pieceType(piece);
+  const int sideIndex = colorIndex(color);
+  const int typeIndex = static_cast<int>(type);
+  const Square square = squareFromCoords(x, y);
+  const Bitboard bit = bitboard::bit(square);
+
+  pieceBB[sideIndex][typeIndex] |= bit;
+  occupancyBB[sideIndex] |= bit;
+  allBB |= bit;
+
+  if (type == PieceType::King) {
+    kingSq[sideIndex] = square;
+  }
+}
+
+void Board::removePieceFromBitboards(Piece piece, int x, int y) {
+  if (piece == Piece::None) return;
+
+  const Color color = colorOfPiece(piece);
+  const PieceType type = pieceType(piece);
+  const int sideIndex = colorIndex(color);
+  const int typeIndex = static_cast<int>(type);
+  const Square square = squareFromCoords(x, y);
+  const Bitboard bit = bitboard::bit(square);
+
+  pieceBB[sideIndex][typeIndex] &= ~bit;
+  occupancyBB[sideIndex] &= ~bit;
+  allBB &= ~bit;
+
+  if (type == PieceType::King && kingSq[sideIndex] == square) {
+    kingSq[sideIndex] = kNoSquare;
+  }
+}
+
+void Board::rebuildBitboards() {
+  clearBitboards();
+
+  for (int x = 0; x < kBoardSize; ++x) {
+    for (int y = 0; y < kBoardSize; ++y) {
+      addPieceToBitboards(board[x][y], x, y);
+    }
+  }
+}
+
+void Board::putPiece(int x, int y, Piece piece) {
+  const Piece previous = board[x][y];
+  if (previous == piece) return;
+
+  const Square square = squareFromCoords(x, y);
+  if (previous != Piece::None) {
+    zobristKey ^= zobrist::piece(previous, square);
+  }
+
+  removePieceFromBitboards(previous, x, y);
+  board[x][y] = piece;
+  addPieceToBitboards(piece, x, y);
+
+  if (piece != Piece::None) {
+    zobristKey ^= zobrist::piece(piece, square);
+  }
+}
+
+int Board::castlingRightsMask() const {
+  int mask = 0;
+  if (wCastleK) mask |= 1;
+  if (wCastleQ) mask |= 2;
+  if (bCastleK) mask |= 4;
+  if (bCastleQ) mask |= 8;
+  return mask;
+}
+
+std::uint64_t Board::computeZobristKey() const {
+  std::uint64_t key = 0;
+
+  for (int x = 0; x < kBoardSize; ++x) {
+    for (int y = 0; y < kBoardSize; ++y) {
+      const Piece piece = board[x][y];
+      if (piece == Piece::None) continue;
+      key ^= zobrist::piece(piece, squareFromCoords(x, y));
+    }
+  }
+
+  key ^= zobrist::castling(castlingRightsMask());
+  if (hasEp) key ^= zobrist::enPassant(epSquare);
+  if (side == Color::Black) key ^= zobrist::sideToMove();
+
+  return key;
+}
+
+bool Board::bitboardsAreConsistent() const {
+  Bitboard expectedPieces[kColorCount][kPieceTypeCount] = {};
+  Bitboard expectedOccupancy[kColorCount] = {};
+  Bitboard expectedAll = 0;
+  Square expectedKings[kColorCount] = {kNoSquare, kNoSquare};
+
+  for (int x = 0; x < kBoardSize; ++x) {
+    for (int y = 0; y < kBoardSize; ++y) {
+      const Piece piece = board[x][y];
+      if (piece == Piece::None) continue;
+
+      const Color color = colorOfPiece(piece);
+      const PieceType type = pieceType(piece);
+      const int sideIndex = colorIndex(color);
+      const int typeIndex = static_cast<int>(type);
+      const Square square = squareFromCoords(x, y);
+      const Bitboard bit = bitboard::bit(square);
+
+      expectedPieces[sideIndex][typeIndex] |= bit;
+      expectedOccupancy[sideIndex] |= bit;
+      expectedAll |= bit;
+
+      if (type == PieceType::King) {
+        if (expectedKings[sideIndex] != kNoSquare) return false;
+        expectedKings[sideIndex] = square;
+      }
+    }
+  }
+
+  if ((occupancyBB[colorIndex(Color::White)] &
+       occupancyBB[colorIndex(Color::Black)]) != 0)
+    return false;
+  if ((occupancyBB[colorIndex(Color::White)] |
+       occupancyBB[colorIndex(Color::Black)]) != allBB)
+    return false;
+
+  for (int color = 0; color < kColorCount; ++color) {
+    if (occupancyBB[color] != expectedOccupancy[color]) return false;
+    if (kingSq[color] != expectedKings[color]) return false;
+
+    Bitboard mergedPieces = 0;
+    for (int type = 0; type < kPieceTypeCount; ++type) {
+      if (pieceBB[color][type] != expectedPieces[color][type]) return false;
+      mergedPieces |= pieceBB[color][type];
+    }
+    if (mergedPieces != occupancyBB[color]) return false;
+  }
+
+  if (allBB != expectedAll) return false;
+
+  const Square expectedEp =
+      hasEp ? squareFromCoords(epX, epY) : static_cast<Square>(kNoSquare);
+  if (epSquare != expectedEp) return false;
+
+  return zobristKey == computeZobristKey();
+}
+
 bool Board::makeMove(const Move& move) {
   if (!isInsideBoard(move.fromX(), move.fromY()) ||
       !isInsideBoard(move.toX(), move.toY())) {
@@ -589,29 +773,40 @@ bool Board::makeMove(const Move& move) {
   state.prevHasEp = hasEp;
   state.prevEpX = epX;
   state.prevEpY = epY;
+  state.prevEpSquare = epSquare;
+  state.prevZobristKey = zobristKey;
 
   const PieceType movingType = pieceType(movingPiece);
   const bool white = movingSide == Color::White;
+  const int previousCastlingRights = castlingRightsMask();
+  if (hasEp) zobristKey ^= zobrist::enPassant(epSquare);
+  zobristKey ^= zobrist::castling(previousCastlingRights);
 
-  if (movingType == PieceType::Pawn && targetPiece == Piece::None &&
-      move.fromY() != move.toY() && hasEp && move.toX() == epX &&
-      move.toY() == epY) {
+  const bool isEnPassant =
+      move.isEnPassant() ||
+      (movingType == PieceType::Pawn && targetPiece == Piece::None &&
+       move.fromY() != move.toY() && hasEp && move.toX() == epX &&
+       move.toY() == epY);
+  if (isEnPassant) {
     state.wasEp = true;
     state.capX = move.toX() + (white ? 1 : -1);
     state.capY = move.toY();
     state.capturedPiece = board[state.capX][state.capY];
-    board[state.capX][state.capY] = Piece::None;
+    putPiece(state.capX, state.capY, Piece::None);
   }
 
-  if (movingType == PieceType::Pawn) {
+  if (movingType == PieceType::Pawn && move.isPromotion()) {
     const int promoRank = white ? kBlackBackRank : kWhiteBackRank;
     if (move.toX() == promoRank) {
       state.placedPiece = makePiece(movingSide, move.promo());
     }
   }
 
-  if (movingType == PieceType::King && move.fromX() == move.toX() &&
-      std::abs(move.toY() - move.fromY()) == 2) {
+  const bool isCastle =
+      move.isCastle() ||
+      (movingType == PieceType::King && move.fromX() == move.toX() &&
+       std::abs(move.toY() - move.fromY()) == 2);
+  if (isCastle) {
     state.wasCastle = true;
     state.rookFromX = move.fromX();
     state.rookToX = move.fromX();
@@ -621,31 +816,38 @@ bool Board::makeMove(const Move& move) {
         move.toY() > move.fromY() ? kKingsideBishopFile : kQueenFile;
   }
 
-  board[move.toX()][move.toY()] = state.placedPiece;
-  board[move.fromX()][move.fromY()] = Piece::None;
+  putPiece(move.toX(), move.toY(), state.placedPiece);
+  putPiece(move.fromX(), move.fromY(), Piece::None);
   if (state.wasCastle) {
-    board[state.rookToX][state.rookToY] =
-        board[state.rookFromX][state.rookFromY];
-    board[state.rookFromX][state.rookFromY] = Piece::None;
+    const Piece rook = board[state.rookFromX][state.rookFromY];
+    putPiece(state.rookToX, state.rookToY, rook);
+    putPiece(state.rookFromX, state.rookFromY, Piece::None);
   }
 
   updateCastlingRights(move, movingPiece, targetPiece);
   hasEp = false;
   epX = -1;
   epY = -1;
-  if (movingType == PieceType::Pawn &&
-      std::abs(move.toX() - move.fromX()) == 2) {
+  epSquare = kNoSquare;
+  if (move.isDoublePawnPush() ||
+      (movingType == PieceType::Pawn &&
+       std::abs(move.toX() - move.fromX()) == 2)) {
     hasEp = true;
     epX = (move.fromX() + move.toX()) / 2;
     epY = move.fromY();
+    epSquare = squareFromCoords(epX, epY);
   }
+  zobristKey ^= zobrist::castling(castlingRightsMask());
+  if (hasEp) zobristKey ^= zobrist::enPassant(epSquare);
   side = oppositeColor(side);
+  zobristKey ^= zobrist::sideToMove();
 
   if (isKingInCheckForSide(movingSide)) {
     undoMove();
     return false;
   }
 
+  assert(bitboardsAreConsistent());
   return true;
 }
 
@@ -655,17 +857,17 @@ bool Board::undoMove() {
   const MoveState& state = history[--histSize];
 
   if (state.wasCastle) {
-    board[state.rookFromX][state.rookFromY] =
-        board[state.rookToX][state.rookToY];
-    board[state.rookToX][state.rookToY] = Piece::None;
+    const Piece rook = board[state.rookToX][state.rookToY];
+    putPiece(state.rookFromX, state.rookFromY, rook);
+    putPiece(state.rookToX, state.rookToY, Piece::None);
   }
 
-  board[state.move.fromX()][state.move.fromY()] = state.movedPiece;
+  putPiece(state.move.fromX(), state.move.fromY(), state.movedPiece);
   if (state.wasEp) {
-    board[state.move.toX()][state.move.toY()] = Piece::None;
-    board[state.capX][state.capY] = state.capturedPiece;
+    putPiece(state.move.toX(), state.move.toY(), Piece::None);
+    putPiece(state.capX, state.capY, state.capturedPiece);
   } else {
-    board[state.move.toX()][state.move.toY()] = state.capturedPiece;
+    putPiece(state.move.toX(), state.move.toY(), state.capturedPiece);
   }
   side = state.prevSide;
   wCastleK = state.prevWCastleK;
@@ -675,7 +877,10 @@ bool Board::undoMove() {
   hasEp = state.prevHasEp;
   epX = state.prevEpX;
   epY = state.prevEpY;
+  epSquare = state.prevEpSquare;
+  zobristKey = state.prevZobristKey;
 
+  assert(bitboardsAreConsistent());
   return true;
 }
 
@@ -727,3 +932,31 @@ void Board::printBoard() const {
 Color Board::sideToMove() const { return side; }
 
 Piece Board::at(int x, int y) const { return board[x][y]; }
+
+Bitboard Board::pieces(Color color, PieceType type) const {
+  return pieceBB[colorIndex(color)][static_cast<int>(type)];
+}
+
+Bitboard Board::occupancy(Color color) const {
+  return occupancyBB[colorIndex(color)];
+}
+
+Bitboard Board::allPieces() const { return allBB; }
+
+Square Board::kingSquare(Color color) const {
+  return kingSq[colorIndex(color)];
+}
+
+bool Board::hasEnPassant() const { return hasEp; }
+
+Square Board::enPassantSquare() const { return epSquare; }
+
+bool Board::canCastleKingSide(Color color) const {
+  return color == Color::White ? wCastleK : bCastleK;
+}
+
+bool Board::canCastleQueenSide(Color color) const {
+  return color == Color::White ? wCastleQ : bCastleQ;
+}
+
+std::uint64_t Board::key() const { return zobristKey; }
