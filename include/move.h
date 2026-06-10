@@ -43,6 +43,8 @@ class Move {
     return Move(pack(from, to, flag));
   }
 
+  static constexpr Move fromRaw(std::uint16_t raw) { return Move(raw); }
+
   constexpr Square fromSquare() const { return data_ & kSquareMask; }
   constexpr Square toSquare() const { return (data_ >> kToShift) & kSquareMask; }
   constexpr int fromX() const { return bitboard::coordX(fromSquare()); }

@@ -304,6 +304,22 @@ bool runEvaluationAndSearchTests() {
   ok &= expectBool("search captures queen", result.bestMove.toUci() == "f1f3",
                    true);
   ok &= expectBool("search visits nodes", result.nodes > 0, true);
+  ok &= expectBool("search stores tt entries", result.ttStores > 0, true);
+
+  clearSearchState();
+  Board firstTTSearch;
+  Board secondTTSearch;
+  ok &= expectBool("load tt first search", firstTTSearch.setFromFen(kStartFen),
+                   true);
+  ok &= expectBool("load tt second search",
+                   secondTTSearch.setFromFen(kStartFen), true);
+  const SearchResult first = searchBestMove(firstTTSearch, {3});
+  const SearchResult second = searchBestMove(secondTTSearch, {3});
+  ok &= expectBool("tt first search has best move", first.hasBestMove, true);
+  ok &= expectBool("tt second search has best move", second.hasBestMove, true);
+  ok &= expectBool("tt preserves best move",
+                   second.bestMove.raw() == first.bestMove.raw(), true);
+  ok &= expectBool("tt second search hits table", second.ttHits > 0, true);
 
   return ok;
 }

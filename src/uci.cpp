@@ -293,6 +293,7 @@ void runUci(std::istream& in, std::ostream& out) {
       out << "readyok\n";
     } else if (command == "ucinewgame") {
       board = Board{};
+      clearSearchState();
     } else if (startsWith(command, "position")) {
       if (!setPositionFromUci(board, command)) {
         out << "info string invalid position command\n";

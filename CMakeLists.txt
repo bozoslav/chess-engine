@@ -11,6 +11,7 @@ add_library(chess_engine_core
   src/board.cpp
   src/evaluate.cpp
   src/search.cpp
+  src/transposition_table.cpp
   src/types.cpp
   src/movegen.cpp
   src/uci.cpp
@@ -43,6 +44,9 @@ endif()
 
 add_executable(chess_engine_perft_benchmark benchmarks/perft_benchmark.cpp)
 target_link_libraries(chess_engine_perft_benchmark PRIVATE chess_engine_core)
+
+add_executable(chess_engine_search_benchmark benchmarks/search_benchmark.cpp)
+target_link_libraries(chess_engine_search_benchmark PRIVATE chess_engine_core)
 
 add_executable(chess_engine_attacks_benchmark benchmarks/attacks_benchmark.cpp)
 target_link_libraries(chess_engine_attacks_benchmark PRIVATE chess_engine_core)
