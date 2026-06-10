@@ -254,7 +254,7 @@ bool runUciProtocolTests() {
       "uci\n"
       "isready\n"
       "position startpos moves e2e4 e7e5\n"
-      "go depth 1\n"
+      "go depth 2\n"
       "go perft 2\n"
       "quit\n");
   std::ostringstream output;
@@ -263,7 +263,10 @@ bool runUciProtocolTests() {
   ok &= expectTextContains("uci id", text, "id name chess_engine");
   ok &= expectTextContains("uci ok", text, "uciok");
   ok &= expectTextContains("uci ready", text, "readyok");
+  ok &= expectTextContains("uci depth 1 info", text, "info depth 1");
+  ok &= expectTextContains("uci depth 2 info", text, "info depth 2");
   ok &= expectTextContains("uci score", text, "score cp ");
+  ok &= expectTextContains("uci quiet stats", text, "quiet_cutoffs ");
   ok &= expectTextContains("uci bestmove", text, "bestmove ");
   ok &= expectTextContains("uci perft", text, "perft depth 2 nodes ");
 
@@ -320,6 +323,17 @@ bool runEvaluationAndSearchTests() {
   ok &= expectBool("tt preserves best move",
                    second.bestMove.raw() == first.bestMove.raw(), true);
   ok &= expectBool("tt second search hits table", second.ttHits > 0, true);
+
+  clearSearchState();
+  Board orderedStart;
+  SearchLimits orderingLimits;
+  orderingLimits.depth = 3;
+  const SearchResult ordered = searchBestMove(orderedStart, orderingLimits);
+  ok &= expectBool("quiet ordering produces cutoffs",
+                   ordered.quietCutoffs > 0, true);
+  ok &= expectBool("quiet ordering records uses",
+                   ordered.killerMoveUses > 0 || ordered.historyMoveUses > 0,
+                   true);
 
   return ok;
 }

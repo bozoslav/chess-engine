@@ -114,25 +114,49 @@ int parsePositiveInt(std::string_view text, int fallback) {
   return value > 0 ? value : fallback;
 }
 
-void writeSearchResult(const Board& board, SearchResult result,
-                       std::ostream& out) {
+void writeInfoLine(const Board& board, const SearchResult& result,
+                   std::ostream& out) {
+  if (!result.hasBestMove) return;
+  out << "info depth " << result.depth << " nodes " << result.nodes
+      << " score cp " << result.score;
+  out << " string tt_hits " << result.ttHits << " tt_cutoffs "
+      << result.ttCutoffs << " tt_move_uses " << result.ttMoveUses
+      << " killer_uses " << result.killerMoveUses << " history_uses "
+      << result.historyMoveUses << " quiet_cutoffs " << result.quietCutoffs;
+  if (board.hasRepeatedPosition()) {
+    out << " repetition " << board.repetitionCount();
+  }
+  out << '\n';
+}
+
+void writeBestMoveLine(const SearchResult& result, std::ostream& out) {
   if (!result.hasBestMove) {
     out << "bestmove 0000\n";
     return;
   }
 
-  out << "info depth " << result.depth << " nodes " << result.nodes
-      << " score cp " << result.score;
-  if (board.hasRepeatedPosition()) {
-    out << " string repetition " << board.repetitionCount();
-  }
-  out << '\n';
   out << "bestmove " << result.bestMove.toUci() << '\n';
 }
 
+struct SearchInfoOutput {
+  const Board* board;
+  std::ostream* out;
+};
+
+void writeDepthInfo(const SearchResult& result, void* context) {
+  SearchInfoOutput* output = static_cast<SearchInfoOutput*>(context);
+  writeInfoLine(*output->board, result, *output->out);
+}
+
 void writeBestMove(Board& board, int depth, std::ostream& out) {
-  const SearchResult result = searchBestMove(board, {depth});
-  writeSearchResult(board, result, out);
+  SearchInfoOutput output{&board, &out};
+  SearchLimits limits;
+  limits.depth = depth;
+  limits.onDepthComplete = writeDepthInfo;
+  limits.infoContext = &output;
+
+  const SearchResult result = searchBestMove(board, limits);
+  writeBestMoveLine(result, out);
 }
 
 void runPerftLine(Board& board, int depth, std::ostream& out) {

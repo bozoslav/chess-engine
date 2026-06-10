@@ -13,6 +13,7 @@ struct BenchmarkCase {
   const char* fen;
   int depth;
   bool useTT;
+  bool useQuietOrdering;
 };
 
 struct BenchmarkResult {
@@ -24,6 +25,9 @@ struct BenchmarkResult {
   double meanTTHits;
   double meanTTCutoffs;
   double meanTTMoveUses;
+  double meanKillerMoveUses;
+  double meanHistoryMoveUses;
+  double meanQuietCutoffs;
   int runs;
   bool ok;
 };
@@ -37,8 +41,11 @@ SearchResult runSearchOnce(const BenchmarkCase& testCase, double& seconds) {
 
   clearSearchState();
   const auto start = std::chrono::steady_clock::now();
-  SearchResult result = searchBestMove(
-      board, {testCase.depth, testCase.useTT});
+  SearchLimits limits;
+  limits.depth = testCase.depth;
+  limits.useTranspositionTable = testCase.useTT;
+  limits.useQuietOrdering = testCase.useQuietOrdering;
+  const SearchResult result = searchBestMove(board, limits);
   const auto finish = std::chrono::steady_clock::now();
   const std::chrono::duration<double> elapsed = finish - start;
   seconds = elapsed.count();
@@ -49,7 +56,8 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
   double firstSeconds = 0.0;
   const SearchResult first = runSearchOnce(testCase, firstSeconds);
   if (!first.hasBestMove) {
-    return {&testCase, first, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, false};
+    return {&testCase, first, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,       0.0,   0.0,  0,   false};
   }
 
   SearchResult best = first;
@@ -59,6 +67,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
   double totalTTHits = static_cast<double>(first.ttHits);
   double totalTTCutoffs = static_cast<double>(first.ttCutoffs);
   double totalTTMoveUses = static_cast<double>(first.ttMoveUses);
+  double totalKillerMoveUses = static_cast<double>(first.killerMoveUses);
+  double totalHistoryMoveUses = static_cast<double>(first.historyMoveUses);
+  double totalQuietCutoffs = static_cast<double>(first.quietCutoffs);
 
   for (int run = 1; run < runs; ++run) {
     double seconds = 0.0;
@@ -66,7 +77,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
     if (!result.hasBestMove) {
       return {&testCase, result, bestSeconds, totalSeconds / run,
               totalNodes / run, totalTTHits / run, totalTTCutoffs / run,
-              totalTTMoveUses / run, run, false};
+              totalTTMoveUses / run, totalKillerMoveUses / run,
+              totalHistoryMoveUses / run, totalQuietCutoffs / run, run,
+              false};
     }
 
     if (seconds < bestSeconds) {
@@ -79,6 +92,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
     totalTTHits += static_cast<double>(result.ttHits);
     totalTTCutoffs += static_cast<double>(result.ttCutoffs);
     totalTTMoveUses += static_cast<double>(result.ttMoveUses);
+    totalKillerMoveUses += static_cast<double>(result.killerMoveUses);
+    totalHistoryMoveUses += static_cast<double>(result.historyMoveUses);
+    totalQuietCutoffs += static_cast<double>(result.quietCutoffs);
   }
 
   return {&testCase,
@@ -89,6 +105,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
           totalTTHits / runs,
           totalTTCutoffs / runs,
           totalTTMoveUses / runs,
+          totalKillerMoveUses / runs,
+          totalHistoryMoveUses / runs,
+          totalQuietCutoffs / runs,
           runs,
           true};
 }
@@ -107,41 +126,47 @@ int main() {
 
   constexpr BenchmarkCase cases[] = {
       {
-          "startpos_no_tt",
-          kStartFen,
-          5,
-          false,
-      },
-      {
-          "startpos_tt",
+          "startpos_tt_plain",
           kStartFen,
           5,
           true,
-      },
-      {
-          "kiwipete_no_tt",
-          "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
-          "PPPBBPPP/R3K2R w KQkq - 0 1",
-          4,
           false,
       },
       {
-          "kiwipete_tt",
+          "startpos_tt_ordered",
+          kStartFen,
+          5,
+          true,
+          true,
+      },
+      {
+          "kiwipete_tt_plain",
           "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
           "PPPBBPPP/R3K2R w KQkq - 0 1",
           4,
           true,
-      },
-      {
-          "open_king_no_tt",
-          "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1",
-          6,
           false,
       },
       {
-          "open_king_tt",
+          "kiwipete_tt_ordered",
+          "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
+          "PPPBBPPP/R3K2R w KQkq - 0 1",
+          4,
+          true,
+          true,
+      },
+      {
+          "open_king_tt_plain",
           "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1",
           6,
+          true,
+          false,
+      },
+      {
+          "open_king_tt_ordered",
+          "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1",
+          6,
+          true,
           true,
       },
   };
@@ -150,7 +175,8 @@ int main() {
   std::cout << "case,depth,bestmove,score,best_nodes,best_seconds,"
                "best_nodes_per_second,mean_nodes,mean_seconds,"
                "mean_nodes_per_second,mean_tt_hits,mean_tt_cutoffs,"
-               "mean_tt_move_uses,runs,status\n";
+               "mean_tt_move_uses,mean_killer_uses,mean_history_uses,"
+               "mean_quiet_cutoffs,runs,status\n";
 
   bool ok = true;
   double totalMeanNodes = 0.0;
@@ -176,14 +202,17 @@ int main() {
               << ',' << result.meanNodes << ',' << result.meanSeconds << ','
               << nodesPerSecond(result.meanNodes, result.meanSeconds) << ','
               << result.meanTTHits << ',' << result.meanTTCutoffs << ','
-              << result.meanTTMoveUses << ',' << result.runs << ','
+              << result.meanTTMoveUses << ',' << result.meanKillerMoveUses
+              << ',' << result.meanHistoryMoveUses << ','
+              << result.meanQuietCutoffs << ',' << result.runs << ','
               << (result.ok ? "ok" : "search_failed") << '\n';
   }
 
   std::cout << "total,-,-,0,0,0.000000,0.000000," << totalMeanNodes << ','
             << totalMeanSeconds << ','
             << nodesPerSecond(totalMeanNodes, totalMeanSeconds)
-            << ",0.000000,0.000000,0.000000," << kRunsPerCase << ','
+            << ",0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,"
+            << kRunsPerCase << ','
             << (ok ? "ok" : "search_failed") << '\n';
 
   return ok ? 0 : 1;

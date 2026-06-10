@@ -4,11 +4,6 @@
 
 #include "board.h"
 
-struct SearchLimits {
-  int depth = 1;
-  bool useTranspositionTable = true;
-};
-
 struct SearchResult {
   Move bestMove;
   int score = 0;
@@ -18,7 +13,22 @@ struct SearchResult {
   std::uint64_t ttCutoffs = 0;
   std::uint64_t ttStores = 0;
   std::uint64_t ttMoveUses = 0;
+  std::uint64_t killerMoveUses = 0;
+  std::uint64_t historyMoveUses = 0;
+  std::uint64_t quietCutoffs = 0;
   bool hasBestMove = false;
+};
+
+using SearchInfoCallback = void (*)(const SearchResult& result,
+                                    void* context);
+
+struct SearchLimits {
+  int depth = 1;
+  bool useTranspositionTable = true;
+  bool useQuietOrdering = true;
+  bool iterativeDeepening = true;
+  SearchInfoCallback onDepthComplete = nullptr;
+  void* infoContext = nullptr;
 };
 
 void clearSearchState();
