@@ -9,6 +9,7 @@
 #include <string>
 
 #include "movegen.h"
+#include "search.h"
 
 namespace {
 
@@ -113,20 +114,25 @@ int parsePositiveInt(std::string_view text, int fallback) {
   return value > 0 ? value : fallback;
 }
 
-void writeBestMove(const Board& board, std::ostream& out) {
-  MoveList moves;
-  genLegalMoves(board, moves);
-  if (moves.empty() || moves.overflowed()) {
+void writeSearchResult(const Board& board, SearchResult result,
+                       std::ostream& out) {
+  if (!result.hasBestMove) {
     out << "bestmove 0000\n";
     return;
   }
 
-  out << "info depth 1 nodes " << moves.size() << " score cp 0";
+  out << "info depth " << result.depth << " nodes " << result.nodes
+      << " score cp " << result.score;
   if (board.hasRepeatedPosition()) {
     out << " string repetition " << board.repetitionCount();
   }
   out << '\n';
-  out << "bestmove " << moves[0].toUci() << '\n';
+  out << "bestmove " << result.bestMove.toUci() << '\n';
+}
+
+void writeBestMove(Board& board, int depth, std::ostream& out) {
+  const SearchResult result = searchBestMove(board, {depth});
+  writeSearchResult(board, result, out);
 }
 
 void runPerftLine(Board& board, int depth, std::ostream& out) {
@@ -140,7 +146,7 @@ std::uint64_t mixChecksum(std::uint64_t checksum, std::uint64_t value) {
   return checksum;
 }
 
-void handleGo(const Board& board, std::string_view command, std::ostream& out) {
+void handleGo(Board& board, std::string_view command, std::ostream& out) {
   std::istringstream stream{std::string(command)};
   std::string token;
   int depth = 1;
@@ -164,7 +170,7 @@ void handleGo(const Board& board, std::string_view command, std::ostream& out) {
     return;
   }
 
-  writeBestMove(board, out);
+  writeBestMove(board, depth, out);
 }
 
 }  // namespace

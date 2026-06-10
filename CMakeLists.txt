@@ -9,6 +9,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(chess_engine_core
   src/attacks.cpp
   src/board.cpp
+  src/evaluate.cpp
+  src/search.cpp
   src/types.cpp
   src/movegen.cpp
   src/uci.cpp

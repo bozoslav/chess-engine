@@ -5,7 +5,9 @@
 #include <string_view>
 
 #include "board.h"
+#include "evaluate.h"
 #include "movegen.h"
+#include "search.h"
 #include "uci.h"
 
 namespace {
@@ -261,12 +263,47 @@ bool runUciProtocolTests() {
   ok &= expectTextContains("uci id", text, "id name chess_engine");
   ok &= expectTextContains("uci ok", text, "uciok");
   ok &= expectTextContains("uci ready", text, "readyok");
+  ok &= expectTextContains("uci score", text, "score cp ");
   ok &= expectTextContains("uci bestmove", text, "bestmove ");
   ok &= expectTextContains("uci perft", text, "perft depth 2 nodes ");
 
   std::ostringstream benchOutput;
   ok &= expectBool("bench command", runBench(benchOutput), true);
   ok &= expectTextContains("bench total", benchOutput.str(), "bench total");
+
+  return ok;
+}
+
+bool runEvaluationAndSearchTests() {
+  bool ok = true;
+
+  Board start;
+  ok &= expectBool("start eval is equal", evaluate(start), 0);
+
+  Board whiteMaterial;
+  ok &= expectBool(
+      "load white material edge",
+      whiteMaterial.setFromFen("4k3/8/8/8/8/8/8/4KQ2 w - - 0 1"), true);
+  ok &= expectBool("white material eval positive", evaluate(whiteMaterial) > 800,
+                   true);
+
+  Board blackToMoveMaterial;
+  ok &= expectBool(
+      "load black material edge",
+      blackToMoveMaterial.setFromFen("4k3/8/8/8/8/8/8/4KQ2 b - - 0 1"),
+      true);
+  ok &= expectBool("black side eval negative",
+                   evaluate(blackToMoveMaterial) < -800, true);
+
+  Board captureQueen;
+  ok &= expectBool(
+      "load queen capture search",
+      captureQueen.setFromFen("4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1"), true);
+  const SearchResult result = searchBestMove(captureQueen, {1});
+  ok &= expectBool("search has best move", result.hasBestMove, true);
+  ok &= expectBool("search captures queen", result.bestMove.toUci() == "f1f3",
+                   true);
+  ok &= expectBool("search visits nodes", result.nodes > 0, true);
 
   return ok;
 }
@@ -418,6 +455,7 @@ int main() {
   bool ok = runMoveEncodingAndHashTests();
   ok &= runRepetitionTests();
   ok &= runUciProtocolTests();
+  ok &= runEvaluationAndSearchTests();
   ok &= runRuleSmokeTests();
   for (const PerftPosition& position : positions) {
     ok &= runPerftPosition(position);
