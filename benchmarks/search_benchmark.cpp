@@ -14,6 +14,8 @@ struct BenchmarkCase {
   int depth;
   bool useTT;
   bool useQuietOrdering;
+  bool usePVS;
+  bool useAspirationWindows;
 };
 
 struct BenchmarkResult {
@@ -28,6 +30,8 @@ struct BenchmarkResult {
   double meanKillerMoveUses;
   double meanHistoryMoveUses;
   double meanQuietCutoffs;
+  double meanPVSResearches;
+  double meanAspirationResearches;
   int runs;
   bool ok;
 };
@@ -45,6 +49,8 @@ SearchResult runSearchOnce(const BenchmarkCase& testCase, double& seconds) {
   limits.depth = testCase.depth;
   limits.useTranspositionTable = testCase.useTT;
   limits.useQuietOrdering = testCase.useQuietOrdering;
+  limits.usePVS = testCase.usePVS;
+  limits.useAspirationWindows = testCase.useAspirationWindows;
   const SearchResult result = searchBestMove(board, limits);
   const auto finish = std::chrono::steady_clock::now();
   const std::chrono::duration<double> elapsed = finish - start;
@@ -56,8 +62,8 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
   double firstSeconds = 0.0;
   const SearchResult first = runSearchOnce(testCase, firstSeconds);
   if (!first.hasBestMove) {
-    return {&testCase, first, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0,       0.0,   0.0,  0,   false};
+    return {&testCase, first, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0,
+            0.0,       0.0,   0.0, 0.0, 0.0, 0,   false};
   }
 
   SearchResult best = first;
@@ -70,15 +76,28 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
   double totalKillerMoveUses = static_cast<double>(first.killerMoveUses);
   double totalHistoryMoveUses = static_cast<double>(first.historyMoveUses);
   double totalQuietCutoffs = static_cast<double>(first.quietCutoffs);
+  double totalPVSResearches = static_cast<double>(first.pvsResearches);
+  double totalAspirationResearches =
+      static_cast<double>(first.aspirationResearches);
 
   for (int run = 1; run < runs; ++run) {
     double seconds = 0.0;
     const SearchResult result = runSearchOnce(testCase, seconds);
     if (!result.hasBestMove) {
-      return {&testCase, result, bestSeconds, totalSeconds / run,
-              totalNodes / run, totalTTHits / run, totalTTCutoffs / run,
-              totalTTMoveUses / run, totalKillerMoveUses / run,
-              totalHistoryMoveUses / run, totalQuietCutoffs / run, run,
+      return {&testCase,
+              result,
+              bestSeconds,
+              totalSeconds / run,
+              totalNodes / run,
+              totalTTHits / run,
+              totalTTCutoffs / run,
+              totalTTMoveUses / run,
+              totalKillerMoveUses / run,
+              totalHistoryMoveUses / run,
+              totalQuietCutoffs / run,
+              totalPVSResearches / run,
+              totalAspirationResearches / run,
+              run,
               false};
     }
 
@@ -95,6 +114,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
     totalKillerMoveUses += static_cast<double>(result.killerMoveUses);
     totalHistoryMoveUses += static_cast<double>(result.historyMoveUses);
     totalQuietCutoffs += static_cast<double>(result.quietCutoffs);
+    totalPVSResearches += static_cast<double>(result.pvsResearches);
+    totalAspirationResearches +=
+        static_cast<double>(result.aspirationResearches);
   }
 
   return {&testCase,
@@ -108,6 +130,8 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
           totalKillerMoveUses / runs,
           totalHistoryMoveUses / runs,
           totalQuietCutoffs / runs,
+          totalPVSResearches / runs,
+          totalAspirationResearches / runs,
           runs,
           true};
 }
@@ -131,11 +155,24 @@ int main() {
           5,
           true,
           false,
+          false,
+          false,
       },
       {
-          "startpos_tt_ordered",
+          "startpos_tt_ordered_ab",
           kStartFen,
           5,
+          true,
+          true,
+          false,
+          false,
+      },
+      {
+          "startpos_tt_ordered_pvs_asp",
+          kStartFen,
+          5,
+          true,
+          true,
           true,
           true,
       },
@@ -146,12 +183,26 @@ int main() {
           4,
           true,
           false,
+          false,
+          false,
       },
       {
-          "kiwipete_tt_ordered",
+          "kiwipete_tt_ordered_ab",
           "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
           "PPPBBPPP/R3K2R w KQkq - 0 1",
           4,
+          true,
+          true,
+          false,
+          false,
+      },
+      {
+          "kiwipete_tt_ordered_pvs_asp",
+          "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
+          "PPPBBPPP/R3K2R w KQkq - 0 1",
+          4,
+          true,
+          true,
           true,
           true,
       },
@@ -161,11 +212,24 @@ int main() {
           6,
           true,
           false,
+          false,
+          false,
       },
       {
-          "open_king_tt_ordered",
+          "open_king_tt_ordered_ab",
           "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1",
           6,
+          true,
+          true,
+          false,
+          false,
+      },
+      {
+          "open_king_tt_ordered_pvs_asp",
+          "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1",
+          6,
+          true,
+          true,
           true,
           true,
       },
@@ -176,7 +240,8 @@ int main() {
                "best_nodes_per_second,mean_nodes,mean_seconds,"
                "mean_nodes_per_second,mean_tt_hits,mean_tt_cutoffs,"
                "mean_tt_move_uses,mean_killer_uses,mean_history_uses,"
-               "mean_quiet_cutoffs,runs,status\n";
+               "mean_quiet_cutoffs,mean_pvs_researches,"
+               "mean_aspiration_researches,runs,status\n";
 
   bool ok = true;
   double totalMeanNodes = 0.0;
@@ -195,8 +260,8 @@ int main() {
       std::cout << "0000";
     }
 
-    std::cout << ',' << result.search.score << ',' << result.search.nodes
-              << ',' << result.bestSeconds << ','
+    std::cout << ',' << result.search.score << ',' << result.search.nodes << ','
+              << result.bestSeconds << ','
               << nodesPerSecond(static_cast<double>(result.search.nodes),
                                 result.bestSeconds)
               << ',' << result.meanNodes << ',' << result.meanSeconds << ','
@@ -204,16 +269,17 @@ int main() {
               << result.meanTTHits << ',' << result.meanTTCutoffs << ','
               << result.meanTTMoveUses << ',' << result.meanKillerMoveUses
               << ',' << result.meanHistoryMoveUses << ','
-              << result.meanQuietCutoffs << ',' << result.runs << ','
-              << (result.ok ? "ok" : "search_failed") << '\n';
+              << result.meanQuietCutoffs << ',' << result.meanPVSResearches
+              << ',' << result.meanAspirationResearches << ',' << result.runs
+              << ',' << (result.ok ? "ok" : "search_failed") << '\n';
   }
 
   std::cout << "total,-,-,0,0,0.000000,0.000000," << totalMeanNodes << ','
             << totalMeanSeconds << ','
             << nodesPerSecond(totalMeanNodes, totalMeanSeconds)
             << ",0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,"
-            << kRunsPerCase << ','
-            << (ok ? "ok" : "search_failed") << '\n';
+               "0.000000,0.000000,"
+            << kRunsPerCase << ',' << (ok ? "ok" : "search_failed") << '\n';
 
   return ok ? 0 : 1;
 }

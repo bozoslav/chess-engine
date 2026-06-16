@@ -28,8 +28,8 @@ class TranspositionTable {
 
   void clear();
   bool probe(std::uint64_t key, TranspositionProbe& out) const;
-  void store(std::uint64_t key, int depth, int score,
-             TranspositionBound bound, Move bestMove);
+  void store(std::uint64_t key, int depth, int score, TranspositionBound bound,
+             Move bestMove);
 };
 
 TranspositionTable& globalTranspositionTable();

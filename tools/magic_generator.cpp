@@ -208,7 +208,7 @@ void printArray(const char* name,
   std::cout << "}};\n\n";
 }
 
-}
+}  // namespace
 
 int main() {
   std::array<Bitboard, kSquares> rookMagics{};

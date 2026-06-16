@@ -59,4 +59,4 @@ inline Square popLsb(Bitboard& value) noexcept {
   return square;
 }
 
-}
+}  // namespace bitboard

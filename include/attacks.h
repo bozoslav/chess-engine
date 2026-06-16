@@ -27,7 +27,7 @@ extern MagicEntry rookEntries[bitboard::kSquareCount];
 extern MagicEntry bishopEntries[bitboard::kSquareCount];
 extern Bitboard sliderAttackTable[kSliderAttackTableSize];
 
-}
+}  // namespace attack_detail
 
 class AttackTables final {
  public:

@@ -1,5 +1,6 @@
 #include "uci.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <iomanip>
@@ -14,6 +15,7 @@
 namespace {
 
 constexpr Square kNoSquare = -1;
+constexpr int kTimedSearchDepth = 64;
 constexpr const char* kStartFen =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -22,6 +24,18 @@ struct BenchCase {
   const char* fen;
   int depth;
   std::uint64_t expectedNodes;
+};
+
+struct GoOptions {
+  int depth = 1;
+  int movetimeMs = 0;
+  int whiteTimeMs = 0;
+  int blackTimeMs = 0;
+  int whiteIncrementMs = 0;
+  int blackIncrementMs = 0;
+  bool hasDepth = false;
+  bool perftMode = false;
+  bool infinite = false;
 };
 
 constexpr BenchCase kBenchCases[] = {
@@ -114,15 +128,30 @@ int parsePositiveInt(std::string_view text, int fallback) {
   return value > 0 ? value : fallback;
 }
 
+void writeMoveUci(std::ostream& out, const Move& move) {
+  char text[5] = {};
+  const std::size_t size = move.writeUci(text);
+  out.write(text, static_cast<std::streamsize>(size));
+}
+
 void writeInfoLine(const Board& board, const SearchResult& result,
                    std::ostream& out) {
   if (!result.hasBestMove) return;
   out << "info depth " << result.depth << " nodes " << result.nodes
       << " score cp " << result.score;
+  if (result.pvLength > 0) {
+    out << " pv";
+    for (int index = 0; index < result.pvLength; ++index) {
+      out << ' ';
+      writeMoveUci(out, result.principalVariation[index]);
+    }
+  }
   out << " string tt_hits " << result.ttHits << " tt_cutoffs "
       << result.ttCutoffs << " tt_move_uses " << result.ttMoveUses
       << " killer_uses " << result.killerMoveUses << " history_uses "
-      << result.historyMoveUses << " quiet_cutoffs " << result.quietCutoffs;
+      << result.historyMoveUses << " quiet_cutoffs " << result.quietCutoffs
+      << " pvs_researches " << result.pvsResearches << " aspiration_researches "
+      << result.aspirationResearches;
   if (board.hasRepeatedPosition()) {
     out << " repetition " << board.repetitionCount();
   }
@@ -135,7 +164,9 @@ void writeBestMoveLine(const SearchResult& result, std::ostream& out) {
     return;
   }
 
-  out << "bestmove " << result.bestMove.toUci() << '\n';
+  out << "bestmove ";
+  writeMoveUci(out, result.bestMove);
+  out << '\n';
 }
 
 struct SearchInfoOutput {
@@ -148,10 +179,36 @@ void writeDepthInfo(const SearchResult& result, void* context) {
   writeInfoLine(*output->board, result, *output->out);
 }
 
-void writeBestMove(Board& board, int depth, std::ostream& out) {
+int allocateTimeMs(const Board& board, const GoOptions& options) {
+  if (options.movetimeMs > 0) return options.movetimeMs;
+
+  const bool white = board.sideToMove() == Color::White;
+  const int remaining = white ? options.whiteTimeMs : options.blackTimeMs;
+  const int increment =
+      white ? options.whiteIncrementMs : options.blackIncrementMs;
+  if (remaining <= 0) return 0;
+
+  const int base = remaining / 30;
+  const int incrementUse = increment / 2;
+  const int conservativeCap = std::max(1, remaining / 4);
+  const int reserve = remaining > 200 ? 50 : std::max(1, remaining / 10);
+  const int rawBudget = std::max(1, base + incrementUse);
+  const int cappedBudget = std::min(rawBudget, conservativeCap);
+  return std::min(cappedBudget, std::max(1, remaining - reserve));
+}
+
+void writeBestMove(Board& board, const GoOptions& options, std::ostream& out) {
   SearchInfoOutput output{&board, &out};
   SearchLimits limits;
-  limits.depth = depth;
+  const int allocatedTimeMs = allocateTimeMs(board, options);
+  limits.timeLimitMs = static_cast<std::uint64_t>(allocatedTimeMs);
+  if (options.hasDepth) {
+    limits.depth = options.depth;
+  } else if (allocatedTimeMs > 0 || options.infinite) {
+    limits.depth = kTimedSearchDepth;
+  } else {
+    limits.depth = 1;
+  }
   limits.onDepthComplete = writeDepthInfo;
   limits.infoContext = &output;
 
@@ -165,36 +222,53 @@ void runPerftLine(Board& board, int depth, std::ostream& out) {
 }
 
 std::uint64_t mixChecksum(std::uint64_t checksum, std::uint64_t value) {
-  checksum ^=
-      value + 0x9e3779b97f4a7c15ULL + (checksum << 6) + (checksum >> 2);
+  checksum ^= value + 0x9e3779b97f4a7c15ULL + (checksum << 6) + (checksum >> 2);
   return checksum;
 }
 
 void handleGo(Board& board, std::string_view command, std::ostream& out) {
   std::istringstream stream{std::string(command)};
   std::string token;
-  int depth = 1;
-  bool perftMode = false;
+  GoOptions options;
 
   stream >> token;
   while (stream >> token) {
     if (token == "depth") {
-      stream >> depth;
+      stream >> options.depth;
+      options.hasDepth = true;
     } else if (token == "perft") {
-      stream >> depth;
-      perftMode = true;
+      stream >> options.depth;
+      options.hasDepth = true;
+      options.perftMode = true;
+    } else if (token == "movetime") {
+      stream >> options.movetimeMs;
+    } else if (token == "wtime") {
+      stream >> options.whiteTimeMs;
+    } else if (token == "btime") {
+      stream >> options.blackTimeMs;
+    } else if (token == "winc") {
+      stream >> options.whiteIncrementMs;
+    } else if (token == "binc") {
+      stream >> options.blackIncrementMs;
+    } else if (token == "infinite") {
+      options.infinite = true;
     }
   }
 
-  if (depth <= 0) depth = 1;
+  if (options.depth <= 0) options.depth = 1;
+  if (options.movetimeMs < 0) options.movetimeMs = 0;
+  if (options.whiteTimeMs < 0) options.whiteTimeMs = 0;
+  if (options.blackTimeMs < 0) options.blackTimeMs = 0;
+  if (options.whiteIncrementMs < 0) options.whiteIncrementMs = 0;
+  if (options.blackIncrementMs < 0) options.blackIncrementMs = 0;
 
-  if (perftMode) {
+  if (options.perftMode) {
     Board copy = board;
-    runPerftLine(copy, depth, out);
+    runPerftLine(copy, options.depth, out);
     return;
   }
 
-  writeBestMove(board, depth, out);
+  writeBestMove(board, options, out);
 }
 
 }  // namespace
@@ -242,9 +316,9 @@ bool setPositionFromUci(Board& board, std::string_view command) {
     command.remove_prefix(3);
     command = trim(command);
     const std::size_t movesPos = command.find(" moves ");
-    const std::string_view fen =
-        movesPos == std::string_view::npos ? command
-                                           : command.substr(0, movesPos);
+    const std::string_view fen = movesPos == std::string_view::npos
+                                     ? command
+                                     : command.substr(0, movesPos);
     if (!next.setFromFen(trim(fen))) return false;
     moveText = movesPos == std::string_view::npos
                    ? std::string_view{}
@@ -280,11 +354,11 @@ bool runBench(std::ostream& out) {
     totalNodes += nodes;
     checksum = mixChecksum(checksum, board.key());
     checksum = mixChecksum(checksum, nodes);
-    checksum = mixChecksum(checksum, static_cast<std::uint64_t>(testCase.depth));
+    checksum =
+        mixChecksum(checksum, static_cast<std::uint64_t>(testCase.depth));
 
-    out << "bench " << testCase.name << " depth " << testCase.depth
-        << " nodes " << nodes << ' ' << (matches ? "ok" : "node_mismatch")
-        << '\n';
+    out << "bench " << testCase.name << " depth " << testCase.depth << " nodes "
+        << nodes << ' ' << (matches ? "ok" : "node_mismatch") << '\n';
   }
 
   const std::chrono::duration<double> elapsed = Clock::now() - start;
@@ -295,8 +369,7 @@ bool runBench(std::ostream& out) {
   out << "bench total nodes " << totalNodes << " seconds " << std::fixed
       << std::setprecision(6) << seconds << " nps "
       << static_cast<std::uint64_t>(nps) << " checksum 0x" << std::hex
-      << checksum << std::dec << ' ' << (ok ? "ok" : "node_mismatch")
-      << '\n';
+      << checksum << std::dec << ' ' << (ok ? "ok" : "node_mismatch") << '\n';
 
   return ok;
 }

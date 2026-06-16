@@ -46,7 +46,9 @@ class Move {
   static constexpr Move fromRaw(std::uint16_t raw) { return Move(raw); }
 
   constexpr Square fromSquare() const { return data_ & kSquareMask; }
-  constexpr Square toSquare() const { return (data_ >> kToShift) & kSquareMask; }
+  constexpr Square toSquare() const {
+    return (data_ >> kToShift) & kSquareMask;
+  }
   constexpr int fromX() const { return bitboard::coordX(fromSquare()); }
   constexpr int fromY() const { return bitboard::coordY(fromSquare()); }
   constexpr int toX() const { return bitboard::coordX(toSquare()); }
@@ -88,8 +90,7 @@ class Move {
     return std::string(text, size);
   }
 
-  static constexpr MoveFlag promotionFlag(PieceType promo,
-                                          bool isCapture) {
+  static constexpr MoveFlag promotionFlag(PieceType promo, bool isCapture) {
     switch (promo) {
       case PieceType::Knight:
         return isCapture ? MoveFlag::KnightPromotionCapture

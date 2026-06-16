@@ -38,8 +38,7 @@ void pushMove(MoveList& moves, Square from, Square to,
 void pushPawnMove(MoveList& moves, Color side, Square from, Square to,
                   bool isCapture) {
   if (!isPromotionRank(side, to)) {
-    pushMove(moves, from, to, isCapture ? MoveFlag::Capture
-                                        : MoveFlag::Quiet);
+    pushMove(moves, from, to, isCapture ? MoveFlag::Capture : MoveFlag::Quiet);
     return;
   }
 
@@ -369,9 +368,8 @@ void generatePieceMoves(const Board& board, MoveList& moves, Color side,
     while (targets != 0) {
       const Square to = bitboard::popLsb(targets);
       pushMove(moves, from, to,
-               (board.occupancy(enemy) & squareBit(to)) != 0
-                   ? MoveFlag::Capture
-                   : MoveFlag::Quiet);
+               (board.occupancy(enemy) & squareBit(to)) != 0 ? MoveFlag::Capture
+                                                             : MoveFlag::Quiet);
     }
   }
 }

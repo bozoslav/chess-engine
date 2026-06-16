@@ -837,9 +837,8 @@ bool Board::makeMove(const Move& move) {
   epX = -1;
   epY = -1;
   epSquare = kNoSquare;
-  if (move.isDoublePawnPush() ||
-      (movingType == PieceType::Pawn &&
-       std::abs(move.toX() - move.fromX()) == 2)) {
+  if (move.isDoublePawnPush() || (movingType == PieceType::Pawn &&
+                                  std::abs(move.toX() - move.fromX()) == 2)) {
     hasEp = true;
     epX = (move.fromX() + move.toX()) / 2;
     epY = move.fromY();

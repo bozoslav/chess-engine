@@ -146,46 +146,37 @@ bool runMoveEncodingAndHashTests() {
 
   Board blackToMove;
   ok &= expectBool("load black-to-move FEN",
-                   blackToMove.setFromFen(
-                       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/"
-                       "RNBQKBNR b KQkq - 0 1"),
+                   blackToMove.setFromFen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/"
+                                          "RNBQKBNR b KQkq - 0 1"),
                    true);
   ok &= expectBool("side-to-move changes hash",
                    blackToMove.key() != fenStart.key(), true);
 
-  ok &= expectUciMove("uci quiet knight", kStartFen, "g1f3",
-                      MoveFlag::Quiet);
+  ok &= expectUciMove("uci quiet knight", kStartFen, "g1f3", MoveFlag::Quiet);
   ok &= expectUciMove("uci double pawn push", kStartFen, "e2e4",
                       MoveFlag::DoublePawnPush);
-  ok &= expectUciMove("uci capture",
-                      "8/8/8/3p4/4P3/8/8/k6K w - - 0 1", "e4d5",
+  ok &= expectUciMove("uci capture", "8/8/8/3p4/4P3/8/8/k6K w - - 0 1", "e4d5",
                       MoveFlag::Capture);
-  ok &= expectUciMove("uci castle",
-                      "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1",
-                      MoveFlag::KingCastle);
-  ok &= expectUciMove("uci en passant",
-                      "k7/8/8/3pP3/8/8/8/7K w - d6 0 1", "e5d6",
-                      MoveFlag::EnPassant);
-  ok &= expectUciMove("uci promotion",
-                      "8/P7/8/8/8/8/8/k6K w - - 0 1", "a7a8q",
+  ok &= expectUciMove("uci castle", "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+                      "e1g1", MoveFlag::KingCastle);
+  ok &= expectUciMove("uci en passant", "k7/8/8/3pP3/8/8/8/7K w - d6 0 1",
+                      "e5d6", MoveFlag::EnPassant);
+  ok &= expectUciMove("uci promotion", "8/P7/8/8/8/8/8/k6K w - - 0 1", "a7a8q",
                       MoveFlag::QueenPromotion, PieceType::Queen);
-  ok &= expectUciMove("uci promotion capture",
-                      "1r6/P7/8/8/8/8/8/k6K w - - 0 1", "a7b8q",
-                      MoveFlag::QueenPromotionCapture, PieceType::Queen);
+  ok &=
+      expectUciMove("uci promotion capture", "1r6/P7/8/8/8/8/8/k6K w - - 0 1",
+                    "a7b8q", MoveFlag::QueenPromotionCapture, PieceType::Queen);
   ok &= expectRejectedUciMove("reject illegal uci", kStartFen, "e2e5");
 
   ok &= expectMakeUndoRestoresKey("hash quiet make undo", kStartFen, "g1f3");
   ok &= expectMakeUndoRestoresKey("hash double push make undo", kStartFen,
                                   "e2e4");
   ok &= expectMakeUndoRestoresKey(
-      "hash castle make undo",
-      "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1");
-  ok &= expectMakeUndoRestoresKey(
-      "hash en passant make undo", "k7/8/8/3pP3/8/8/8/7K w - d6 0 1",
-      "e5d6");
+      "hash castle make undo", "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1");
+  ok &= expectMakeUndoRestoresKey("hash en passant make undo",
+                                  "k7/8/8/3pP3/8/8/8/7K w - d6 0 1", "e5d6");
   ok &= expectMakeUndoRestoresKey("hash promotion make undo",
-                                  "8/P7/8/8/8/8/8/k6K w - - 0 1",
-                                  "a7a8q");
+                                  "8/P7/8/8/8/8/8/k6K w - - 0 1", "a7a8q");
 
   return ok;
 }
@@ -220,11 +211,11 @@ bool runRepetitionTests() {
                    true);
 
   Board fromCommand;
-  ok &= expectBool("position command with moves",
-                   setPositionFromUci(
-                       fromCommand,
-                       "position startpos moves g1f3 g8f6 f3g1 f6g8"),
-                   true);
+  ok &= expectBool(
+      "position command with moves",
+      setPositionFromUci(fromCommand,
+                         "position startpos moves g1f3 g8f6 f3g1 f6g8"),
+      true);
   ok &= expectBool("position command repetition",
                    fromCommand.hasRepeatedPosition(), true);
 
@@ -238,14 +229,13 @@ bool runUciProtocolTests() {
   ok &= expectBool("set startpos command",
                    setPositionFromUci(board, "position startpos moves e2e4"),
                    true);
-  ok &= expectBool("set startpos side", board.sideToMove() == Color::Black,
-                   true);
+  ok &=
+      expectBool("set startpos side", board.sideToMove() == Color::Black, true);
 
-  ok &= expectBool("set fen command",
-                   setPositionFromUci(
-                       board,
-                       "position fen 8/8/8/8/8/8/8/k6K w - - 0 1"),
-                   true);
+  ok &= expectBool(
+      "set fen command",
+      setPositionFromUci(board, "position fen 8/8/8/8/8/8/8/k6K w - - 0 1"),
+      true);
   ok &= expectBool("reject bad position",
                    setPositionFromUci(board, "position startpos moves e2e5"),
                    false);
@@ -255,6 +245,7 @@ bool runUciProtocolTests() {
       "isready\n"
       "position startpos moves e2e4 e7e5\n"
       "go depth 2\n"
+      "go movetime 1\n"
       "go perft 2\n"
       "quit\n");
   std::ostringstream output;
@@ -266,7 +257,11 @@ bool runUciProtocolTests() {
   ok &= expectTextContains("uci depth 1 info", text, "info depth 1");
   ok &= expectTextContains("uci depth 2 info", text, "info depth 2");
   ok &= expectTextContains("uci score", text, "score cp ");
+  ok &= expectTextContains("uci pv", text, " pv ");
   ok &= expectTextContains("uci quiet stats", text, "quiet_cutoffs ");
+  ok &= expectTextContains("uci pvs stats", text, "pvs_researches ");
+  ok &= expectTextContains("uci aspiration stats", text,
+                           "aspiration_researches ");
   ok &= expectTextContains("uci bestmove", text, "bestmove ");
   ok &= expectTextContains("uci perft", text, "perft depth 2 nodes ");
 
@@ -284,27 +279,30 @@ bool runEvaluationAndSearchTests() {
   ok &= expectBool("start eval is equal", evaluate(start), 0);
 
   Board whiteMaterial;
-  ok &= expectBool(
-      "load white material edge",
-      whiteMaterial.setFromFen("4k3/8/8/8/8/8/8/4KQ2 w - - 0 1"), true);
-  ok &= expectBool("white material eval positive", evaluate(whiteMaterial) > 800,
+  ok &= expectBool("load white material edge",
+                   whiteMaterial.setFromFen("4k3/8/8/8/8/8/8/4KQ2 w - - 0 1"),
                    true);
+  ok &= expectBool("white material eval positive",
+                   evaluate(whiteMaterial) > 800, true);
 
   Board blackToMoveMaterial;
   ok &= expectBool(
       "load black material edge",
-      blackToMoveMaterial.setFromFen("4k3/8/8/8/8/8/8/4KQ2 b - - 0 1"),
-      true);
+      blackToMoveMaterial.setFromFen("4k3/8/8/8/8/8/8/4KQ2 b - - 0 1"), true);
   ok &= expectBool("black side eval negative",
                    evaluate(blackToMoveMaterial) < -800, true);
 
   Board captureQueen;
-  ok &= expectBool(
-      "load queen capture search",
-      captureQueen.setFromFen("4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1"), true);
+  ok &= expectBool("load queen capture search",
+                   captureQueen.setFromFen("4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1"),
+                   true);
   const SearchResult result = searchBestMove(captureQueen, {1});
   ok &= expectBool("search has best move", result.hasBestMove, true);
   ok &= expectBool("search captures queen", result.bestMove.toUci() == "f1f3",
+                   true);
+  ok &= expectBool("search records pv", result.pvLength > 0, true);
+  ok &= expectBool("search pv starts with best move",
+                   result.principalVariation[0].raw() == result.bestMove.raw(),
                    true);
   ok &= expectBool("search visits nodes", result.nodes > 0, true);
   ok &= expectBool("search stores tt entries", result.ttStores > 0, true);
@@ -329,11 +327,56 @@ bool runEvaluationAndSearchTests() {
   SearchLimits orderingLimits;
   orderingLimits.depth = 3;
   const SearchResult ordered = searchBestMove(orderedStart, orderingLimits);
-  ok &= expectBool("quiet ordering produces cutoffs",
-                   ordered.quietCutoffs > 0, true);
+  ok &= expectBool("quiet ordering produces cutoffs", ordered.quietCutoffs > 0,
+                   true);
   ok &= expectBool("quiet ordering records uses",
                    ordered.killerMoveUses > 0 || ordered.historyMoveUses > 0,
                    true);
+
+  clearSearchState();
+  Board alphaBetaStart;
+  Board pvsStart;
+  SearchLimits alphaBetaLimits;
+  alphaBetaLimits.depth = 4;
+  alphaBetaLimits.useTranspositionTable = false;
+  alphaBetaLimits.usePVS = false;
+  alphaBetaLimits.useAspirationWindows = false;
+  SearchLimits pvsLimits = alphaBetaLimits;
+  pvsLimits.usePVS = true;
+  ok &= expectBool("load ab start", alphaBetaStart.setFromFen(kStartFen), true);
+  ok &= expectBool("load pvs start", pvsStart.setFromFen(kStartFen), true);
+  const SearchResult alphaBeta =
+      searchBestMove(alphaBetaStart, alphaBetaLimits);
+  const SearchResult pvs = searchBestMove(pvsStart, pvsLimits);
+  ok &= expectBool("ab has best move", alphaBeta.hasBestMove, true);
+  ok &= expectBool("pvs has best move", pvs.hasBestMove, true);
+  ok &= expectBool("pvs preserves score", pvs.score == alphaBeta.score, true);
+  ok &= expectBool("pvs records pv", pvs.pvLength > 0, true);
+  ok &= expectBool("pvs pv starts with best move",
+                   pvs.principalVariation[0].raw() == pvs.bestMove.raw(), true);
+
+  clearSearchState();
+  Board aspirationStart;
+  SearchLimits aspirationLimits;
+  aspirationLimits.depth = 3;
+  aspirationLimits.useTranspositionTable = false;
+  aspirationLimits.usePVS = false;
+  aspirationLimits.useAspirationWindows = true;
+  aspirationLimits.aspirationWindow = 1;
+  const SearchResult aspiration =
+      searchBestMove(aspirationStart, aspirationLimits);
+  ok &= expectBool("aspiration has best move", aspiration.hasBestMove, true);
+  ok &= expectBool("aspiration researches tight window",
+                   aspiration.aspirationResearches > 0, true);
+
+  clearSearchState();
+  Board timedStart;
+  SearchLimits timedLimits;
+  timedLimits.depth = 64;
+  timedLimits.timeLimitMs = 1;
+  const SearchResult timed = searchBestMove(timedStart, timedLimits);
+  ok &= expectBool("timed search has best move", timed.hasBestMove, true);
+  ok &= expectBool("timed search visits nodes", timed.nodes > 0, true);
 
   return ok;
 }

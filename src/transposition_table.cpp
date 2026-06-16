@@ -45,8 +45,7 @@ std::size_t bucketIndex(std::uint64_t key) {
 std::int16_t clampScore(int score) {
   constexpr int kMinScore = -32768;
   constexpr int kMaxScore = 32767;
-  return static_cast<std::int16_t>(
-      std::clamp(score, kMinScore, kMaxScore));
+  return static_cast<std::int16_t>(std::clamp(score, kMinScore, kMaxScore));
 }
 
 std::uint8_t clampDepth(int depth) {

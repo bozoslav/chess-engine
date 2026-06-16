@@ -299,7 +299,7 @@ void initSliderTable(bool rook, std::uint32_t& offset) noexcept {
 
 bool g_initialized = false;
 
-}
+}  // namespace
 
 namespace attack_detail {
 
@@ -310,7 +310,7 @@ alignas(64) MagicEntry rookEntries[bitboard::kSquareCount] = {};
 alignas(64) MagicEntry bishopEntries[bitboard::kSquareCount] = {};
 alignas(64) Bitboard sliderAttackTable[kSliderAttackTableSize] = {};
 
-}
+}  // namespace attack_detail
 
 void AttackTables::init() noexcept {
   if (g_initialized) return;
