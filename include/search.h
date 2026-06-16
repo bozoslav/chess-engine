@@ -22,6 +22,8 @@ struct SearchResult {
   std::uint64_t quietCutoffs = 0;
   std::uint64_t pvsResearches = 0;
   std::uint64_t aspirationResearches = 0;
+  std::uint64_t nullMoveAttempts = 0;
+  std::uint64_t nullMovePrunes = 0;
   bool hasBestMove = false;
   bool stopped = false;
 };
@@ -34,8 +36,10 @@ struct SearchLimits {
   bool useQuietOrdering = true;
   bool usePVS = true;
   bool useAspirationWindows = true;
+  bool useNullMovePruning = true;
   bool iterativeDeepening = true;
   int aspirationWindow = 50;
+  int nullMoveReduction = 2;
   std::uint64_t timeLimitMs = 0;
   SearchInfoCallback onDepthComplete = nullptr;
   void* infoContext = nullptr;

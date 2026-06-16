@@ -212,6 +212,12 @@ __marimo__/
 # private project notes and benchmark history
 docs/
 
+# local third-party source/build artifacts
+external/baselines/
+external/bin/
+external/cutechess-build/
+external/cutechess-src/
+
 # local CMake/CLion build directories
 cmake-build-*/
 

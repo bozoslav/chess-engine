@@ -766,6 +766,7 @@ bool Board::makeMove(const Move& move) {
   state.capturedPiece = targetPiece;
   state.capX = move.toX();
   state.capY = move.toY();
+  state.wasNull = false;
   state.wasEp = false;
   state.wasCastle = false;
   state.rookFromX = -1;
@@ -864,6 +865,23 @@ bool Board::undoMove() {
 
   const MoveState& state = history[--histSize];
 
+  if (state.wasNull) {
+    side = state.prevSide;
+    wCastleK = state.prevWCastleK;
+    wCastleQ = state.prevWCastleQ;
+    bCastleK = state.prevBCastleK;
+    bCastleQ = state.prevBCastleQ;
+    hasEp = state.prevHasEp;
+    epX = state.prevEpX;
+    epY = state.prevEpY;
+    epSquare = state.prevEpSquare;
+    zobristKey = state.prevZobristKey;
+    keyHistorySize = state.prevKeyHistorySize;
+
+    assert(bitboardsAreConsistent());
+    return true;
+  }
+
   if (state.wasCastle) {
     const Piece rook = board[state.rookToX][state.rookToY];
     putPiece(state.rookFromX, state.rookFromY, rook);
@@ -891,6 +909,45 @@ bool Board::undoMove() {
 
   assert(bitboardsAreConsistent());
   return true;
+}
+
+bool Board::makeNullMove() {
+  if (histSize >= kMaxHistory) return false;
+  if (keyHistorySize >= kMaxHistory + 1) return false;
+  if (isKingInCheck()) return false;
+
+  MoveState& state = history[histSize++];
+  state = {};
+  state.wasNull = true;
+  state.prevSide = side;
+  state.prevWCastleK = wCastleK;
+  state.prevWCastleQ = wCastleQ;
+  state.prevBCastleK = bCastleK;
+  state.prevBCastleQ = bCastleQ;
+  state.prevHasEp = hasEp;
+  state.prevEpX = epX;
+  state.prevEpY = epY;
+  state.prevEpSquare = epSquare;
+  state.prevZobristKey = zobristKey;
+  state.prevKeyHistorySize = keyHistorySize;
+
+  if (hasEp) zobristKey ^= zobrist::enPassant(epSquare);
+  hasEp = false;
+  epX = -1;
+  epY = -1;
+  epSquare = kNoSquare;
+  side = oppositeColor(side);
+  zobristKey ^= zobrist::sideToMove();
+
+  keyHistory[keyHistorySize++] = zobristKey;
+  assert(bitboardsAreConsistent());
+  return true;
+}
+
+bool Board::undoNullMove() {
+  if (histSize == 0) return false;
+  if (!history[histSize - 1].wasNull) return false;
+  return undoMove();
 }
 
 namespace {

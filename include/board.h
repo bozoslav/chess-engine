@@ -32,6 +32,8 @@ class Board {
   bool hasRepeatedPosition() const;
   bool isThreefoldRepetition() const;
   bool makeMove(const Move& move);
+  bool makeNullMove();
+  bool undoNullMove();
   bool setFromFen(std::string_view fen);
 
  private:
@@ -42,6 +44,7 @@ class Board {
     Piece capturedPiece;
     int capX;
     int capY;
+    bool wasNull;
     bool wasEp;
     bool wasCastle;
     int rookFromX;

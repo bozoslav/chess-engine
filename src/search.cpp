@@ -19,6 +19,7 @@ constexpr int kPromotionScore = 450'000;
 constexpr int kFirstKillerScore = 300'000;
 constexpr int kSecondKillerScore = 299'000;
 constexpr std::uint64_t kTimeCheckMask = 2047;
+constexpr int kNullMoveMinDepth = 4;
 
 using Clock = std::chrono::steady_clock;
 
@@ -33,6 +34,8 @@ struct SearchState {
   std::uint64_t quietCutoffs = 0;
   std::uint64_t pvsResearches = 0;
   std::uint64_t aspirationResearches = 0;
+  std::uint64_t nullMoveAttempts = 0;
+  std::uint64_t nullMovePrunes = 0;
   Move killerMoves[kMaxPly][2];
   Move pvTable[kMaxPly][kMaxPly];
   int pvLength[kMaxPly] = {};
@@ -42,9 +45,11 @@ struct SearchState {
   bool useQuietOrdering = true;
   bool usePVS = true;
   bool useAspirationWindows = true;
+  bool useNullMovePruning = true;
   bool hasDeadline = false;
   bool stopped = false;
   int aspirationWindow = 50;
+  int nullMoveReduction = 2;
 };
 
 int colorIndex(Color color) { return color == Color::White ? 0 : 1; }
@@ -184,6 +189,13 @@ bool isNoisyMove(const Move& move) {
   return move.isCapture() || move.isPromotion();
 }
 
+bool hasNonPawnMaterial(const Board& board, Color side) {
+  return (board.pieces(side, PieceType::Knight) |
+          board.pieces(side, PieceType::Bishop) |
+          board.pieces(side, PieceType::Rook) |
+          board.pieces(side, PieceType::Queen)) != 0;
+}
+
 void storeTT(SearchState& state, const Board& board, int depth, int score,
              int ply, TranspositionBound bound, Move bestMove) {
   if (state.tt == nullptr || state.stopped) return;
@@ -217,7 +229,7 @@ void updatePv(SearchState& state, int ply, const Move& move) {
 int quiescence(Board& board, int alpha, int beta, int ply, SearchState& state);
 
 int negamax(Board& board, int depth, int alpha, int beta, int ply,
-            SearchState& state) {
+            SearchState& state, bool allowNullMove) {
   if (visitNode(state)) return evaluate(board);
   if (ply >= 0 && ply < kMaxPly) state.pvLength[ply] = 0;
 
@@ -250,6 +262,29 @@ int negamax(Board& board, int depth, int alpha, int beta, int ply,
           ++state.ttCutoffs;
           return ttScore;
         }
+      }
+    }
+  }
+
+  const bool cutNode = alpha + 1 == beta;
+  if (state.useNullMovePruning && allowNullMove && cutNode &&
+      depth >= kNullMoveMinDepth && ply > 0 && repetitions == 1 &&
+      beta > -kMateScore + kMaxPly && beta < kMateScore - kMaxPly &&
+      !board.isKingInCheck() && hasNonPawnMaterial(board, board.sideToMove()) &&
+      evaluate(board) >= beta) {
+    ++state.nullMoveAttempts;
+    if (board.makeNullMove()) {
+      const int reduction = std::max(1, state.nullMoveReduction + depth / 6);
+      const int nullDepth = std::max(0, depth - 1 - reduction);
+      const int score =
+          -negamax(board, nullDepth, -beta, -beta + 1, ply + 1, state, false);
+      board.undoNullMove();
+
+      if (state.stopped) return alpha;
+      if (score >= beta) {
+        ++state.nullMovePrunes;
+        storeTT(state, board, depth, score, ply, TranspositionBound::Lower, {});
+        return score;
       }
     }
   }
@@ -287,13 +322,14 @@ int negamax(Board& board, int depth, int alpha, int beta, int ply,
 
     int score = 0;
     if (state.usePVS && searchedMove && depth > 1 && alpha + 1 < beta) {
-      score = -negamax(board, depth - 1, -alpha - 1, -alpha, ply + 1, state);
+      score =
+          -negamax(board, depth - 1, -alpha - 1, -alpha, ply + 1, state, true);
       if (!state.stopped && score > alpha && score < beta) {
         ++state.pvsResearches;
-        score = -negamax(board, depth - 1, -beta, -alpha, ply + 1, state);
+        score = -negamax(board, depth - 1, -beta, -alpha, ply + 1, state, true);
       }
     } else {
-      score = -negamax(board, depth - 1, -beta, -alpha, ply + 1, state);
+      score = -negamax(board, depth - 1, -beta, -alpha, ply + 1, state, true);
     }
     board.undoMove();
     if (state.stopped) return alpha;
@@ -377,6 +413,8 @@ SearchResult copyStats(const SearchState& state, SearchResult result) {
   result.quietCutoffs = state.quietCutoffs;
   result.pvsResearches = state.pvsResearches;
   result.aspirationResearches = state.aspirationResearches;
+  result.nullMoveAttempts = state.nullMoveAttempts;
+  result.nullMovePrunes = state.nullMovePrunes;
   result.stopped = state.stopped;
   return result;
 }
@@ -442,13 +480,13 @@ SearchResult searchRoot(Board& board, int depth, int alpha, int beta,
 
     int score = 0;
     if (state.usePVS && result.hasBestMove && depth > 1 && alpha + 1 < beta) {
-      score = -negamax(board, depth - 1, -alpha - 1, -alpha, 1, state);
+      score = -negamax(board, depth - 1, -alpha - 1, -alpha, 1, state, true);
       if (!state.stopped && score > alpha && score < beta) {
         ++state.pvsResearches;
-        score = -negamax(board, depth - 1, -beta, -alpha, 1, state);
+        score = -negamax(board, depth - 1, -beta, -alpha, 1, state, true);
       }
     } else {
-      score = -negamax(board, depth - 1, -beta, -alpha, 1, state);
+      score = -negamax(board, depth - 1, -beta, -alpha, 1, state, true);
     }
     board.undoMove();
     if (state.stopped) return copyStats(state, result);
@@ -525,7 +563,9 @@ SearchResult searchBestMove(Board& board, SearchLimits limits) {
   state.useQuietOrdering = limits.useQuietOrdering;
   state.usePVS = limits.usePVS;
   state.useAspirationWindows = limits.useAspirationWindows;
+  state.useNullMovePruning = limits.useNullMovePruning;
   state.aspirationWindow = std::max(1, limits.aspirationWindow);
+  state.nullMoveReduction = std::max(1, limits.nullMoveReduction);
   if (limits.timeLimitMs > 0) {
     state.hasDeadline = true;
     state.deadline = Clock::now() + std::chrono::milliseconds(

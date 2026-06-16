@@ -178,6 +178,38 @@ bool runMoveEncodingAndHashTests() {
   ok &= expectMakeUndoRestoresKey("hash promotion make undo",
                                   "8/P7/8/8/8/8/8/k6K w - - 0 1", "a7a8q");
 
+  Board nullMoveStart;
+  const std::uint64_t nullStartKey = nullMoveStart.key();
+  ok &= expectBool("null move from start", nullMoveStart.makeNullMove(), true);
+  ok &= expectBool("null move flips side",
+                   nullMoveStart.sideToMove() == Color::Black, true);
+  ok &= expectBool("null move changes key", nullMoveStart.key() != nullStartKey,
+                   true);
+  ok &= expectBool("undo null move", nullMoveStart.undoNullMove(), true);
+  ok &= expectBool("undo null restores side",
+                   nullMoveStart.sideToMove() == Color::White, true);
+  ok &= expectBool("undo null restores key",
+                   nullMoveStart.key() == nullStartKey, true);
+
+  Board nullMoveEp;
+  ok &= expectBool("null ep setup", applyUciMove(nullMoveEp, "e2e4"), true);
+  const std::uint64_t epKey = nullMoveEp.key();
+  ok &= expectBool("double push creates ep", nullMoveEp.hasEnPassant(), true);
+  ok &= expectBool("null clears ep", nullMoveEp.makeNullMove(), true);
+  ok &= expectBool("ep cleared after null", nullMoveEp.hasEnPassant(), false);
+  ok &= expectBool("undo null restores ep", nullMoveEp.undoNullMove(), true);
+  ok &= expectBool("ep restored after undo null", nullMoveEp.hasEnPassant(),
+                   true);
+  ok &= expectBool("ep key restored after undo null", nullMoveEp.key() == epKey,
+                   true);
+
+  Board nullInCheck;
+  ok &= expectBool("load null in check",
+                   nullInCheck.setFromFen("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1"),
+                   true);
+  ok &= expectBool("reject null while in check", nullInCheck.makeNullMove(),
+                   false);
+
   return ok;
 }
 
@@ -262,6 +294,7 @@ bool runUciProtocolTests() {
   ok &= expectTextContains("uci pvs stats", text, "pvs_researches ");
   ok &= expectTextContains("uci aspiration stats", text,
                            "aspiration_researches ");
+  ok &= expectTextContains("uci null stats", text, "null_attempts ");
   ok &= expectTextContains("uci bestmove", text, "bestmove ");
   ok &= expectTextContains("uci perft", text, "perft depth 2 nodes ");
 
@@ -377,6 +410,24 @@ bool runEvaluationAndSearchTests() {
   const SearchResult timed = searchBestMove(timedStart, timedLimits);
   ok &= expectBool("timed search has best move", timed.hasBestMove, true);
   ok &= expectBool("timed search visits nodes", timed.nodes > 0, true);
+
+  clearSearchState();
+  Board noNullStart;
+  Board nullSearchStart;
+  SearchLimits noNullLimits;
+  noNullLimits.depth = 5;
+  noNullLimits.useTranspositionTable = false;
+  noNullLimits.useAspirationWindows = false;
+  noNullLimits.useNullMovePruning = false;
+  SearchLimits nullLimits = noNullLimits;
+  nullLimits.useNullMovePruning = true;
+  const SearchResult noNull = searchBestMove(noNullStart, noNullLimits);
+  const SearchResult nullSearch = searchBestMove(nullSearchStart, nullLimits);
+  ok &= expectBool("null search has best move", nullSearch.hasBestMove, true);
+  ok &= expectBool("null search preserves score",
+                   nullSearch.score == noNull.score, true);
+  ok &= expectBool("null search attempts pruning",
+                   nullSearch.nullMoveAttempts > 0, true);
 
   return ok;
 }
