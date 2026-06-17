@@ -17,6 +17,7 @@ struct BenchmarkCase {
   bool usePVS;
   bool useAspirationWindows;
   bool useNullMovePruning;
+  bool useLateMoveReductions;
 };
 
 struct BenchmarkResult {
@@ -35,6 +36,8 @@ struct BenchmarkResult {
   double meanAspirationResearches;
   double meanNullMoveAttempts;
   double meanNullMovePrunes;
+  double meanLMRAttempts;
+  double meanLMRResearches;
   int runs;
   bool ok;
 };
@@ -55,6 +58,7 @@ SearchResult runSearchOnce(const BenchmarkCase& testCase, double& seconds) {
   limits.usePVS = testCase.usePVS;
   limits.useAspirationWindows = testCase.useAspirationWindows;
   limits.useNullMovePruning = testCase.useNullMovePruning;
+  limits.useLateMoveReductions = testCase.useLateMoveReductions;
   const SearchResult result = searchBestMove(board, limits);
   const auto finish = std::chrono::steady_clock::now();
   const std::chrono::duration<double> elapsed = finish - start;
@@ -66,8 +70,8 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
   double firstSeconds = 0.0;
   const SearchResult first = runSearchOnce(testCase, firstSeconds);
   if (!first.hasBestMove) {
-    return {&testCase, first, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0,
-            0.0,       0.0,   0.0, 0.0, 0.0, 0.0, 0,   false};
+    return {&testCase, first, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,       0.0,   0.0, 0.0, 0.0, 0.0, 0.0, 0,   false};
   }
 
   SearchResult best = first;
@@ -85,6 +89,8 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
       static_cast<double>(first.aspirationResearches);
   double totalNullMoveAttempts = static_cast<double>(first.nullMoveAttempts);
   double totalNullMovePrunes = static_cast<double>(first.nullMovePrunes);
+  double totalLMRAttempts = static_cast<double>(first.lmrAttempts);
+  double totalLMRResearches = static_cast<double>(first.lmrResearches);
 
   for (int run = 1; run < runs; ++run) {
     double seconds = 0.0;
@@ -105,6 +111,8 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
               totalAspirationResearches / run,
               totalNullMoveAttempts / run,
               totalNullMovePrunes / run,
+              totalLMRAttempts / run,
+              totalLMRResearches / run,
               run,
               false};
     }
@@ -127,6 +135,8 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
         static_cast<double>(result.aspirationResearches);
     totalNullMoveAttempts += static_cast<double>(result.nullMoveAttempts);
     totalNullMovePrunes += static_cast<double>(result.nullMovePrunes);
+    totalLMRAttempts += static_cast<double>(result.lmrAttempts);
+    totalLMRResearches += static_cast<double>(result.lmrResearches);
   }
 
   return {&testCase,
@@ -144,6 +154,8 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
           totalAspirationResearches / runs,
           totalNullMoveAttempts / runs,
           totalNullMovePrunes / runs,
+          totalLMRAttempts / runs,
+          totalLMRResearches / runs,
           runs,
           true};
 }
@@ -159,132 +171,42 @@ int main() {
   constexpr int kRunsPerCase = 3;
   constexpr const char* kStartFen =
       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  constexpr const char* kKiwipeteFen =
+      "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
+      "PPPBBPPP/R3K2R w KQkq - 0 1";
+  constexpr const char* kOpenKingFen = "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1";
 
   constexpr BenchmarkCase cases[] = {
-      {
-          "startpos_tt_plain",
-          kStartFen,
-          5,
-          true,
-          false,
-          false,
-          false,
-          false,
-      },
-      {
-          "startpos_tt_ordered_ab",
-          kStartFen,
-          5,
-          true,
-          true,
-          false,
-          false,
-          false,
-      },
-      {
-          "startpos_tt_ordered_pvs_asp_no_null",
-          kStartFen,
-          5,
-          true,
-          true,
-          true,
-          true,
-          false,
-      },
-      {
-          "startpos_tt_ordered_pvs_asp_null",
-          kStartFen,
-          5,
-          true,
-          true,
-          true,
-          true,
-          true,
-      },
-      {
-          "kiwipete_tt_plain",
-          "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
-          "PPPBBPPP/R3K2R w KQkq - 0 1",
-          4,
-          true,
-          false,
-          false,
-          false,
-          false,
-      },
-      {
-          "kiwipete_tt_ordered_ab",
-          "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
-          "PPPBBPPP/R3K2R w KQkq - 0 1",
-          4,
-          true,
-          true,
-          false,
-          false,
-          false,
-      },
-      {
-          "kiwipete_tt_ordered_pvs_asp_no_null",
-          "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
-          "PPPBBPPP/R3K2R w KQkq - 0 1",
-          4,
-          true,
-          true,
-          true,
-          true,
-          false,
-      },
-      {
-          "kiwipete_tt_ordered_pvs_asp_null",
-          "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
-          "PPPBBPPP/R3K2R w KQkq - 0 1",
-          4,
-          true,
-          true,
-          true,
-          true,
-          true,
-      },
-      {
-          "open_king_tt_plain",
-          "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1",
-          6,
-          true,
-          false,
-          false,
-          false,
-          false,
-      },
-      {
-          "open_king_tt_ordered_ab",
-          "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1",
-          6,
-          true,
-          true,
-          false,
-          false,
-          false,
-      },
-      {
-          "open_king_tt_ordered_pvs_asp_no_null",
-          "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1",
-          6,
-          true,
-          true,
-          true,
-          true,
-          false,
-      },
-      {
-          "open_king_tt_ordered_pvs_asp_null",
-          "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1",
-          6,
-          true,
-          true,
-          true,
-          true,
-          true,
-      },
+      {"startpos_tt_plain", kStartFen, 5, true, false, false, false, false,
+       false},
+      {"startpos_tt_ordered_ab", kStartFen, 5, true, true, false, false, false,
+       false},
+      {"startpos_tt_ordered_pvs_asp_no_null", kStartFen, 5, true, true, true,
+       true, false, false},
+      {"startpos_tt_ordered_pvs_asp_null", kStartFen, 5, true, true, true, true,
+       true, false},
+      {"startpos_tt_ordered_pvs_asp_null_lmr", kStartFen, 5, true, true, true,
+       true, true, true},
+      {"kiwipete_tt_plain", kKiwipeteFen, 4, true, false, false, false, false,
+       false},
+      {"kiwipete_tt_ordered_ab", kKiwipeteFen, 4, true, true, false, false,
+       false, false},
+      {"kiwipete_tt_ordered_pvs_asp_no_null", kKiwipeteFen, 4, true, true, true,
+       true, false, false},
+      {"kiwipete_tt_ordered_pvs_asp_null", kKiwipeteFen, 4, true, true, true,
+       true, true, false},
+      {"kiwipete_tt_ordered_pvs_asp_null_lmr", kKiwipeteFen, 4, true, true,
+       true, true, true, true},
+      {"open_king_tt_plain", kOpenKingFen, 6, true, false, false, false, false,
+       false},
+      {"open_king_tt_ordered_ab", kOpenKingFen, 6, true, true, false, false,
+       false, false},
+      {"open_king_tt_ordered_pvs_asp_no_null", kOpenKingFen, 6, true, true,
+       true, true, false, false},
+      {"open_king_tt_ordered_pvs_asp_null", kOpenKingFen, 6, true, true, true,
+       true, true, false},
+      {"open_king_tt_ordered_pvs_asp_null_lmr", kOpenKingFen, 6, true, true,
+       true, true, true, true},
   };
 
   std::cout << std::fixed << std::setprecision(6);
@@ -294,7 +216,8 @@ int main() {
                "mean_tt_move_uses,mean_killer_uses,mean_history_uses,"
                "mean_quiet_cutoffs,mean_pvs_researches,"
                "mean_aspiration_researches,mean_null_attempts,"
-               "mean_null_prunes,runs,status\n";
+               "mean_null_prunes,mean_lmr_attempts,mean_lmr_researches,"
+               "runs,status\n";
 
   bool ok = true;
   double totalMeanNodes = 0.0;
@@ -325,7 +248,8 @@ int main() {
               << result.meanQuietCutoffs << ',' << result.meanPVSResearches
               << ',' << result.meanAspirationResearches << ','
               << result.meanNullMoveAttempts << ',' << result.meanNullMovePrunes
-              << ',' << result.runs << ','
+              << ',' << result.meanLMRAttempts << ','
+              << result.meanLMRResearches << ',' << result.runs << ','
               << (result.ok ? "ok" : "search_failed") << '\n';
   }
 
@@ -333,7 +257,7 @@ int main() {
             << totalMeanSeconds << ','
             << nodesPerSecond(totalMeanNodes, totalMeanSeconds)
             << ",0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,"
-               "0.000000,0.000000,0.000000,0.000000,"
+               "0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,"
             << kRunsPerCase << ',' << (ok ? "ok" : "search_failed") << '\n';
 
   return ok ? 0 : 1;

@@ -152,7 +152,9 @@ void writeInfoLine(const Board& board, const SearchResult& result,
       << result.historyMoveUses << " quiet_cutoffs " << result.quietCutoffs
       << " pvs_researches " << result.pvsResearches << " aspiration_researches "
       << result.aspirationResearches << " null_attempts "
-      << result.nullMoveAttempts << " null_prunes " << result.nullMovePrunes;
+      << result.nullMoveAttempts << " null_prunes " << result.nullMovePrunes
+      << " lmr_attempts " << result.lmrAttempts << " lmr_researches "
+      << result.lmrResearches;
   if (board.hasRepeatedPosition()) {
     out << " repetition " << board.repetitionCount();
   }

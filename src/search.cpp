@@ -20,6 +20,7 @@ constexpr int kFirstKillerScore = 300'000;
 constexpr int kSecondKillerScore = 299'000;
 constexpr std::uint64_t kTimeCheckMask = 2047;
 constexpr int kNullMoveMinDepth = 4;
+constexpr int kMaxLmrReduction = 3;
 
 using Clock = std::chrono::steady_clock;
 
@@ -36,6 +37,8 @@ struct SearchState {
   std::uint64_t aspirationResearches = 0;
   std::uint64_t nullMoveAttempts = 0;
   std::uint64_t nullMovePrunes = 0;
+  std::uint64_t lmrAttempts = 0;
+  std::uint64_t lmrResearches = 0;
   Move killerMoves[kMaxPly][2];
   Move pvTable[kMaxPly][kMaxPly];
   int pvLength[kMaxPly] = {};
@@ -46,10 +49,13 @@ struct SearchState {
   bool usePVS = true;
   bool useAspirationWindows = true;
   bool useNullMovePruning = true;
+  bool useLateMoveReductions = true;
   bool hasDeadline = false;
   bool stopped = false;
   int aspirationWindow = 50;
   int nullMoveReduction = 2;
+  int lmrMinDepth = 3;
+  int lmrMinMoveNumber = 4;
 };
 
 int colorIndex(Color color) { return color == Color::White ? 0 : 1; }
@@ -196,6 +202,13 @@ bool hasNonPawnMaterial(const Board& board, Color side) {
           board.pieces(side, PieceType::Queen)) != 0;
 }
 
+int lmrReduction(int depth, std::size_t moveIndex) {
+  int reduction = 1;
+  if (depth >= 6 && moveIndex >= 7) ++reduction;
+  if (depth >= 10 && moveIndex >= 15) ++reduction;
+  return std::min(reduction, kMaxLmrReduction);
+}
+
 void storeTT(SearchState& state, const Board& board, int depth, int score,
              int ply, TranspositionBound bound, Move bestMove) {
   if (state.tt == nullptr || state.stopped) return;
@@ -266,11 +279,12 @@ int negamax(Board& board, int depth, int alpha, int beta, int ply,
     }
   }
 
+  const bool inCheck = board.isKingInCheck();
   const bool cutNode = alpha + 1 == beta;
   if (state.useNullMovePruning && allowNullMove && cutNode &&
       depth >= kNullMoveMinDepth && ply > 0 && repetitions == 1 &&
-      beta > -kMateScore + kMaxPly && beta < kMateScore - kMaxPly &&
-      !board.isKingInCheck() && hasNonPawnMaterial(board, board.sideToMove()) &&
+      beta > -kMateScore + kMaxPly && beta < kMateScore - kMaxPly && !inCheck &&
+      hasNonPawnMaterial(board, board.sideToMove()) &&
       evaluate(board) >= beta) {
     ++state.nullMoveAttempts;
     if (board.makeNullMove()) {
@@ -294,7 +308,7 @@ int negamax(Board& board, int depth, int alpha, int beta, int ply,
   if (moves.overflowed()) return evaluate(board);
 
   if (moves.empty()) {
-    const int score = board.isKingInCheck() ? -kMateScore + ply : 0;
+    const int score = inCheck ? -kMateScore + ply : 0;
     storeTT(state, board, depth, score, ply, TranspositionBound::Exact, {});
     return score;
   }
@@ -318,10 +332,26 @@ int negamax(Board& board, int depth, int alpha, int beta, int ply,
                historyScore(state, movingSide, move) > 0) {
       ++state.historyMoveUses;
     }
+    const bool canReduce =
+        state.useLateMoveReductions && searchedMove && quiet && cutNode &&
+        depth >= state.lmrMinDepth &&
+        index >= static_cast<std::size_t>(state.lmrMinMoveNumber - 1) &&
+        !inCheck && !isKillerMove(state, ply, move) &&
+        historyScore(state, movingSide, move) <= 0;
     if (!board.makeMove(move)) continue;
 
     int score = 0;
-    if (state.usePVS && searchedMove && depth > 1 && alpha + 1 < beta) {
+    if (canReduce) {
+      ++state.lmrAttempts;
+      const int reduction = lmrReduction(depth, index);
+      const int reducedDepth = std::max(0, depth - 1 - reduction);
+      score = -negamax(board, reducedDepth, -alpha - 1, -alpha, ply + 1, state,
+                       true);
+      if (!state.stopped && score > alpha) {
+        ++state.lmrResearches;
+        score = -negamax(board, depth - 1, -beta, -alpha, ply + 1, state, true);
+      }
+    } else if (state.usePVS && searchedMove && depth > 1 && alpha + 1 < beta) {
       score =
           -negamax(board, depth - 1, -alpha - 1, -alpha, ply + 1, state, true);
       if (!state.stopped && score > alpha && score < beta) {
@@ -415,6 +445,8 @@ SearchResult copyStats(const SearchState& state, SearchResult result) {
   result.aspirationResearches = state.aspirationResearches;
   result.nullMoveAttempts = state.nullMoveAttempts;
   result.nullMovePrunes = state.nullMovePrunes;
+  result.lmrAttempts = state.lmrAttempts;
+  result.lmrResearches = state.lmrResearches;
   result.stopped = state.stopped;
   return result;
 }
@@ -564,8 +596,11 @@ SearchResult searchBestMove(Board& board, SearchLimits limits) {
   state.usePVS = limits.usePVS;
   state.useAspirationWindows = limits.useAspirationWindows;
   state.useNullMovePruning = limits.useNullMovePruning;
+  state.useLateMoveReductions = limits.useLateMoveReductions;
   state.aspirationWindow = std::max(1, limits.aspirationWindow);
   state.nullMoveReduction = std::max(1, limits.nullMoveReduction);
+  state.lmrMinDepth = std::max(1, limits.lmrMinDepth);
+  state.lmrMinMoveNumber = std::max(1, limits.lmrMinMoveNumber);
   if (limits.timeLimitMs > 0) {
     state.hasDeadline = true;
     state.deadline = Clock::now() + std::chrono::milliseconds(

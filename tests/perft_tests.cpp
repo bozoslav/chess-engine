@@ -295,6 +295,7 @@ bool runUciProtocolTests() {
   ok &= expectTextContains("uci aspiration stats", text,
                            "aspiration_researches ");
   ok &= expectTextContains("uci null stats", text, "null_attempts ");
+  ok &= expectTextContains("uci lmr stats", text, "lmr_attempts ");
   ok &= expectTextContains("uci bestmove", text, "bestmove ");
   ok &= expectTextContains("uci perft", text, "perft depth 2 nodes ");
 
@@ -324,6 +325,39 @@ bool runEvaluationAndSearchTests() {
       blackToMoveMaterial.setFromFen("4k3/8/8/8/8/8/8/4KQ2 b - - 0 1"), true);
   ok &= expectBool("black side eval negative",
                    evaluate(blackToMoveMaterial) < -800, true);
+
+  Board passedPawn;
+  Board blockedPassedPawn;
+  ok &= expectBool("load passed pawn eval",
+                   passedPawn.setFromFen("k7/8/p7/4P3/8/8/8/4K3 w - - 0 1"),
+                   true);
+  ok &= expectBool(
+      "load blocked passed pawn eval",
+      blockedPassedPawn.setFromFen("k7/8/3p4/4P3/8/8/8/4K3 w - - 0 1"), true);
+  ok &= expectBool("passed pawn beats blocked pawn",
+                   evaluate(passedPawn) > evaluate(blockedPassedPawn), true);
+
+  Board connectedPawns;
+  Board doubledPawns;
+  ok &= expectBool(
+      "load connected pawns",
+      connectedPawns.setFromFen("4k3/8/8/8/8/8/2PP4/4K3 w - - 0 1"), true);
+  ok &= expectBool("load doubled pawns",
+                   doubledPawns.setFromFen("4k3/8/8/8/8/2P5/2P5/4K3 w - - 0 1"),
+                   true);
+  ok &= expectBool("connected pawns beat doubled isolated pawns",
+                   evaluate(connectedPawns) > evaluate(doubledPawns), true);
+
+  Board rookOpenFile;
+  Board rookBlockedFile;
+  ok &= expectBool("load rook open file",
+                   rookOpenFile.setFromFen("4k3/8/8/8/8/8/1P6/R3K3 w - - 0 1"),
+                   true);
+  ok &= expectBool(
+      "load rook blocked file",
+      rookBlockedFile.setFromFen("4k3/8/8/8/8/8/P7/R3K3 w - - 0 1"), true);
+  ok &= expectBool("rook open file scores higher",
+                   evaluate(rookOpenFile) > evaluate(rookBlockedFile), true);
 
   Board captureQueen;
   ok &= expectBool("load queen capture search",
@@ -374,6 +408,7 @@ bool runEvaluationAndSearchTests() {
   alphaBetaLimits.useTranspositionTable = false;
   alphaBetaLimits.usePVS = false;
   alphaBetaLimits.useAspirationWindows = false;
+  alphaBetaLimits.useLateMoveReductions = false;
   SearchLimits pvsLimits = alphaBetaLimits;
   pvsLimits.usePVS = true;
   ok &= expectBool("load ab start", alphaBetaStart.setFromFen(kStartFen), true);
@@ -395,6 +430,7 @@ bool runEvaluationAndSearchTests() {
   aspirationLimits.useTranspositionTable = false;
   aspirationLimits.usePVS = false;
   aspirationLimits.useAspirationWindows = true;
+  aspirationLimits.useLateMoveReductions = false;
   aspirationLimits.aspirationWindow = 1;
   const SearchResult aspiration =
       searchBestMove(aspirationStart, aspirationLimits);
@@ -419,6 +455,7 @@ bool runEvaluationAndSearchTests() {
   noNullLimits.useTranspositionTable = false;
   noNullLimits.useAspirationWindows = false;
   noNullLimits.useNullMovePruning = false;
+  noNullLimits.useLateMoveReductions = false;
   SearchLimits nullLimits = noNullLimits;
   nullLimits.useNullMovePruning = true;
   const SearchResult noNull = searchBestMove(noNullStart, noNullLimits);
@@ -428,6 +465,25 @@ bool runEvaluationAndSearchTests() {
                    nullSearch.score == noNull.score, true);
   ok &= expectBool("null search attempts pruning",
                    nullSearch.nullMoveAttempts > 0, true);
+
+  clearSearchState();
+  Board noLmrStart;
+  Board lmrStart;
+  SearchLimits noLmrLimits;
+  noLmrLimits.depth = 5;
+  noLmrLimits.useTranspositionTable = false;
+  noLmrLimits.useAspirationWindows = false;
+  noLmrLimits.useNullMovePruning = false;
+  noLmrLimits.useLateMoveReductions = false;
+  SearchLimits lmrLimits = noLmrLimits;
+  lmrLimits.useLateMoveReductions = true;
+  const SearchResult noLmr = searchBestMove(noLmrStart, noLmrLimits);
+  const SearchResult lmr = searchBestMove(lmrStart, lmrLimits);
+  ok &= expectBool("lmr baseline has best move", noLmr.hasBestMove, true);
+  ok &= expectBool("lmr search has best move", lmr.hasBestMove, true);
+  ok &= expectBool("lmr attempts reductions", lmr.lmrAttempts > 0, true);
+  ok &= expectBool("lmr researches no more than attempts",
+                   lmr.lmrResearches <= lmr.lmrAttempts, true);
 
   return ok;
 }
