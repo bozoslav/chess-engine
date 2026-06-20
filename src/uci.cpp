@@ -1,23 +1,39 @@
 #include "uci.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <istream>
+#include <mutex>
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <utility>
 
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
+
+#include "evaluate.h"
 #include "movegen.h"
+#include "nnue.h"
 #include "search.h"
+#include "transposition_table.h"
 
 namespace {
 
 constexpr Square kNoSquare = -1;
 constexpr int kTimedSearchDepth = 64;
+constexpr int kMaxThreads = 128;
 constexpr const char* kStartFen =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+#ifndef CHESS_ENGINE_DEFAULT_EVALFILE
+#define CHESS_ENGINE_DEFAULT_EVALFILE ""
+#endif
 
 struct BenchCase {
   const char* name;
@@ -33,10 +49,29 @@ struct GoOptions {
   int blackTimeMs = 0;
   int whiteIncrementMs = 0;
   int blackIncrementMs = 0;
+  int movesToGo = 0;
   bool hasDepth = false;
   bool perftMode = false;
   bool infinite = false;
 };
+
+int detectDefaultThreads() {
+#if defined(__APPLE__)
+  int performanceCores = 0;
+  std::size_t size = sizeof(performanceCores);
+  if (sysctlbyname("hw.perflevel0.logicalcpu", &performanceCores, &size,
+                   nullptr, 0) == 0 &&
+      performanceCores > 0) {
+    return std::clamp(performanceCores, 1, kMaxThreads);
+  }
+#endif
+
+  const unsigned hardwareThreads = std::thread::hardware_concurrency();
+  if (hardwareThreads == 0) return 1;
+  return std::clamp(static_cast<int>(hardwareThreads), 1, kMaxThreads);
+}
+
+int gSearchThreads = detectDefaultThreads();
 
 constexpr BenchCase kBenchCases[] = {
     {
@@ -111,7 +146,7 @@ bool applyMoveList(Board& board, std::string_view text) {
 
     Move move;
     if (!moveFromUci(board, moveText, move)) return false;
-    if (!board.makeMove(move)) return false;
+    if (!board.makeGeneratedMove(move)) return false;
 
     if (end == std::string_view::npos) break;
     text.remove_prefix(end + 1);
@@ -137,7 +172,12 @@ void writeMoveUci(std::ostream& out, const Move& move) {
 void writeInfoLine(const Board& board, const SearchResult& result,
                    std::ostream& out) {
   if (!result.hasBestMove) return;
-  out << "info depth " << result.depth << " nodes " << result.nodes
+  out << "info depth " << result.depth << " nodes " << result.nodes << " time "
+      << result.timeMs;
+  if (result.timeMs > 0) {
+    out << " nps " << (result.nodes * 1000ULL) / result.timeMs;
+  }
+  out << " hashfull " << globalTranspositionTable().hashfullPermill()
       << " score cp " << result.score;
   if (result.pvLength > 0) {
     out << " pv";
@@ -148,13 +188,18 @@ void writeInfoLine(const Board& board, const SearchResult& result,
   }
   out << " string tt_hits " << result.ttHits << " tt_cutoffs "
       << result.ttCutoffs << " tt_move_uses " << result.ttMoveUses
-      << " killer_uses " << result.killerMoveUses << " history_uses "
-      << result.historyMoveUses << " quiet_cutoffs " << result.quietCutoffs
-      << " pvs_researches " << result.pvsResearches << " aspiration_researches "
+      << " killer_uses " << result.killerMoveUses << " counter_uses "
+      << result.counterMoveUses << " history_uses " << result.historyMoveUses
+      << " continuation_uses " << result.continuationHistoryUses
+      << " capture_history_uses " << result.captureHistoryUses
+      << " quiet_cutoffs " << result.quietCutoffs << " pvs_researches "
+      << result.pvsResearches << " aspiration_researches "
       << result.aspirationResearches << " null_attempts "
       << result.nullMoveAttempts << " null_prunes " << result.nullMovePrunes
       << " lmr_attempts " << result.lmrAttempts << " lmr_researches "
-      << result.lmrResearches;
+      << result.lmrResearches << " see_prunes " << result.seePrunes
+      << " futility_prunes " << result.futilityPrunes << " lmp_prunes "
+      << result.lateMovePrunes;
   if (board.hasRepeatedPosition()) {
     out << " repetition " << board.repetitionCount();
   }
@@ -172,14 +217,31 @@ void writeBestMoveLine(const SearchResult& result, std::ostream& out) {
   out << '\n';
 }
 
+void chooseFallbackBestMove(const Board& board, SearchResult& result) {
+  if (result.hasBestMove) return;
+
+  Board copy = board;
+  MoveList moves;
+  genLegalMoves(copy, moves);
+  if (moves.empty() || moves.overflowed()) return;
+
+  result.bestMove = moves[0];
+  result.principalVariation[0] = moves[0];
+  result.pvLength = 1;
+  result.hasBestMove = true;
+}
+
 struct SearchInfoOutput {
   const Board* board;
   std::ostream* out;
+  std::mutex* outputMutex;
 };
 
 void writeDepthInfo(const SearchResult& result, void* context) {
   SearchInfoOutput* output = static_cast<SearchInfoOutput*>(context);
+  std::lock_guard<std::mutex> lock(*output->outputMutex);
   writeInfoLine(*output->board, result, *output->out);
+  output->out->flush();
 }
 
 int allocateTimeMs(const Board& board, const GoOptions& options) {
@@ -191,7 +253,9 @@ int allocateTimeMs(const Board& board, const GoOptions& options) {
       white ? options.whiteIncrementMs : options.blackIncrementMs;
   if (remaining <= 0) return 0;
 
-  const int base = remaining / 30;
+  const int divisor =
+      options.movesToGo > 0 ? std::clamp(options.movesToGo, 1, 80) : 30;
+  const int base = remaining / divisor;
   const int incrementUse = increment / 2;
   const int conservativeCap = std::max(1, remaining / 4);
   const int reserve = remaining > 200 ? 50 : std::max(1, remaining / 10);
@@ -200,8 +264,9 @@ int allocateTimeMs(const Board& board, const GoOptions& options) {
   return std::min(cappedBudget, std::max(1, remaining - reserve));
 }
 
-void writeBestMove(Board& board, const GoOptions& options, std::ostream& out) {
-  SearchInfoOutput output{&board, &out};
+SearchLimits makeSearchLimits(const Board& board, const GoOptions& options,
+                              SearchInfoOutput& output,
+                              std::atomic_bool* stopSignal) {
   SearchLimits limits;
   const int allocatedTimeMs = allocateTimeMs(board, options);
   limits.timeLimitMs = static_cast<std::uint64_t>(allocatedTimeMs);
@@ -212,16 +277,75 @@ void writeBestMove(Board& board, const GoOptions& options, std::ostream& out) {
   } else {
     limits.depth = 1;
   }
+  limits.threads = gSearchThreads;
   limits.onDepthComplete = writeDepthInfo;
   limits.infoContext = &output;
-
-  const SearchResult result = searchBestMove(board, limits);
-  writeBestMoveLine(result, out);
+  limits.stopSignal = stopSignal;
+  return limits;
 }
+
+bool isSynchronousSearch(const GoOptions& options) {
+  return options.hasDepth && !options.infinite && options.movetimeMs == 0 &&
+         options.whiteTimeMs == 0 && options.blackTimeMs == 0;
+}
+
+struct SearchController {
+  std::thread worker;
+  std::atomic_bool stopSignal{false};
+
+  ~SearchController() { stopAndJoin(); }
+
+  void stopAndJoin() {
+    if (!worker.joinable()) return;
+    stopSignal.store(true, std::memory_order_relaxed);
+    worker.join();
+    stopSignal.store(false, std::memory_order_relaxed);
+  }
+
+  void wait() {
+    if (!worker.joinable()) return;
+    worker.join();
+    stopSignal.store(false, std::memory_order_relaxed);
+  }
+
+  void start(Board board, GoOptions options, std::ostream& out,
+             std::mutex& outputMutex) {
+    stopAndJoin();
+    stopSignal.store(false, std::memory_order_relaxed);
+    worker = std::thread([this, board = std::move(board), options, &out,
+                          &outputMutex]() mutable {
+      SearchInfoOutput output{&board, &out, &outputMutex};
+      SearchLimits limits =
+          makeSearchLimits(board, options, output, &stopSignal);
+      SearchResult result = searchBestMove(board, limits);
+      chooseFallbackBestMove(board, result);
+
+      std::lock_guard<std::mutex> lock(outputMutex);
+      writeBestMoveLine(result, out);
+      out.flush();
+    });
+  }
+};
 
 void runPerftLine(Board& board, int depth, std::ostream& out) {
   const std::uint64_t nodes = perft(board, depth);
   out << "perft depth " << depth << " nodes " << nodes << '\n';
+}
+
+void writeFenLine(const Board& board, std::ostream& out) {
+  out << "fen " << board.toFen() << '\n';
+}
+
+void writeNnueEval(const Board& board, std::ostream& out) {
+  int score = 0;
+  const bool loaded = nnue::evaluate(board, score);
+  out << "nnueeval loaded " << (loaded ? 1 : 0) << " score "
+      << (loaded ? score : 0) << '\n';
+}
+
+void writeEval(const Board& board, std::ostream& out) {
+  out << "NNUE evaluation " << evaluate(board)
+      << " (side to move, internal units)\n";
 }
 
 std::uint64_t mixChecksum(std::uint64_t checksum, std::uint64_t value) {
@@ -229,7 +353,7 @@ std::uint64_t mixChecksum(std::uint64_t checksum, std::uint64_t value) {
   return checksum;
 }
 
-void handleGo(Board& board, std::string_view command, std::ostream& out) {
+GoOptions parseGoOptions(std::string_view command) {
   std::istringstream stream{std::string(command)};
   std::string token;
   GoOptions options;
@@ -253,6 +377,8 @@ void handleGo(Board& board, std::string_view command, std::ostream& out) {
       stream >> options.whiteIncrementMs;
     } else if (token == "binc") {
       stream >> options.blackIncrementMs;
+    } else if (token == "movestogo") {
+      stream >> options.movesToGo;
     } else if (token == "infinite") {
       options.infinite = true;
     }
@@ -264,14 +390,93 @@ void handleGo(Board& board, std::string_view command, std::ostream& out) {
   if (options.blackTimeMs < 0) options.blackTimeMs = 0;
   if (options.whiteIncrementMs < 0) options.whiteIncrementMs = 0;
   if (options.blackIncrementMs < 0) options.blackIncrementMs = 0;
+  if (options.movesToGo < 0) options.movesToGo = 0;
 
-  if (options.perftMode) {
-    Board copy = board;
-    runPerftLine(copy, options.depth, out);
+  return options;
+}
+
+void handleSetOption(std::string_view command, std::ostream& out) {
+  command = trim(command);
+  if (startsWith(command, "setoption")) {
+    command.remove_prefix(9);
+    command = trim(command);
+  }
+  if (!startsWith(command, "name")) {
+    out << "info string invalid setoption command\n";
     return;
   }
 
-  writeBestMove(board, options, out);
+  command.remove_prefix(4);
+  command = trim(command);
+  const std::size_t valuePos = command.find(" value ");
+  const std::string_view name =
+      trim(valuePos == std::string_view::npos ? command
+                                              : command.substr(0, valuePos));
+  const std::string_view value = valuePos == std::string_view::npos
+                                     ? std::string_view{}
+                                     : trim(command.substr(valuePos + 7));
+
+  if (name == "EvalFile") {
+    if (value.empty() || value == "<empty>") {
+      clearNnueFile();
+      out << "info string NNUE eval file cleared\n";
+      return;
+    }
+
+    const std::string path{value};
+    if (loadNnueFile(path.c_str())) {
+      out << "info string Stockfish NNUE loaded " << nnueEvalFile() << '\n';
+    } else {
+      out << "info string failed to load Stockfish NNUE " << path << ": "
+          << nnueLoadError() << '\n';
+    }
+    return;
+  }
+
+  if (name == "Threads") {
+    gSearchThreads =
+        std::clamp(parsePositiveInt(value, gSearchThreads), 1, kMaxThreads);
+    out << "info string Threads set to " << gSearchThreads << '\n';
+    return;
+  }
+
+  if (name == "Hash") {
+    const int fallback =
+        static_cast<int>(globalTranspositionTable().hashSizeMb());
+    const int hashMb = parsePositiveInt(value, fallback);
+    globalTranspositionTable().resize(static_cast<std::size_t>(hashMb));
+    out << "info string Hash set to " << globalTranspositionTable().hashSizeMb()
+        << " MB\n";
+    return;
+  }
+
+  out << "info string unknown option " << name << '\n';
+}
+
+void configureDefaultsFromEnvironment() {
+  const char* evalFileOverride = std::getenv("CHESS_ENGINE_EVALFILE");
+  if (evalFileOverride != nullptr) {
+    if (evalFileOverride[0] == '\0') {
+      clearNnueFile();
+    } else {
+      loadNnueFile(evalFileOverride);
+    }
+  } else if constexpr (std::string_view(CHESS_ENGINE_DEFAULT_EVALFILE).size() >
+                       0) {
+    loadNnueFile(CHESS_ENGINE_DEFAULT_EVALFILE);
+  }
+
+  if (const char* threads = std::getenv("CHESS_ENGINE_THREADS")) {
+    gSearchThreads =
+        std::clamp(parsePositiveInt(threads, gSearchThreads), 1, kMaxThreads);
+  }
+
+  if (const char* hashMb = std::getenv("CHESS_ENGINE_HASH_MB")) {
+    const int fallback =
+        static_cast<int>(globalTranspositionTable().hashSizeMb());
+    globalTranspositionTable().resize(
+        static_cast<std::size_t>(parsePositiveInt(hashMb, fallback)));
+  }
 }
 
 }  // namespace
@@ -378,41 +583,85 @@ bool runBench(std::ostream& out) {
 }
 
 void runUci(std::istream& in, std::ostream& out) {
+  configureDefaultsFromEnvironment();
+
   Board board;
   std::string line;
+  std::mutex outputMutex;
+  SearchController search;
+
+  auto writeLocked = [&](auto writer) {
+    std::lock_guard<std::mutex> lock(outputMutex);
+    writer();
+    out.flush();
+  };
 
   while (std::getline(in, line)) {
     const std::string_view command = trim(line);
     if (command.empty()) continue;
 
     if (command == "uci") {
-      out << "id name chess_engine\n";
-      out << "id author Leon Mamic\n";
-      out << "uciok\n";
+      writeLocked([&]() {
+        out << "id name chess_engine\n";
+        out << "id author Leon Mamic\n";
+        out << "option name EvalFile type string default "
+            << (nnueReady() ? nnueEvalFile() : "<empty>") << '\n';
+        out << "option name Threads type spin default " << gSearchThreads
+            << " min 1 max " << kMaxThreads << '\n';
+        out << "option name Hash type spin default "
+            << globalTranspositionTable().hashSizeMb() << " min "
+            << TranspositionTable::kMinHashMb << " max "
+            << TranspositionTable::kMaxHashMb << '\n';
+        out << "uciok\n";
+      });
     } else if (command == "isready") {
-      out << "readyok\n";
+      writeLocked([&]() { out << "readyok\n"; });
     } else if (command == "ucinewgame") {
+      search.stopAndJoin();
       board = Board{};
       clearSearchState();
     } else if (startsWith(command, "position")) {
+      search.stopAndJoin();
       if (!setPositionFromUci(board, command)) {
-        out << "info string invalid position command\n";
+        writeLocked([&]() { out << "info string invalid position command\n"; });
       }
     } else if (startsWith(command, "go")) {
-      handleGo(board, command, out);
+      const GoOptions options = parseGoOptions(command);
+      if (options.perftMode) {
+        search.stopAndJoin();
+        Board copy = board;
+        writeLocked([&]() { runPerftLine(copy, options.depth, out); });
+      } else {
+        search.start(board, options, out, outputMutex);
+        if (isSynchronousSearch(options)) {
+          search.wait();
+        }
+      }
+    } else if (startsWith(command, "setoption")) {
+      search.stopAndJoin();
+      writeLocked([&]() { handleSetOption(command, out); });
     } else if (startsWith(command, "perft")) {
+      search.stopAndJoin();
       const int depth = parsePositiveInt(trim(command.substr(5)), 1);
-      runPerftLine(board, depth, out);
+      writeLocked([&]() { runPerftLine(board, depth, out); });
+    } else if (command == "fen") {
+      writeLocked([&]() { writeFenLine(board, out); });
+    } else if (command == "nnueeval") {
+      writeLocked([&]() { writeNnueEval(board, out); });
+    } else if (command == "eval") {
+      writeLocked([&]() { writeEval(board, out); });
     } else if (command == "bench") {
-      runBench(out);
+      search.stopAndJoin();
+      writeLocked([&]() { runBench(out); });
     } else if (command == "stop") {
-      out << "bestmove 0000\n";
+      search.stopAndJoin();
     } else if (command == "quit") {
+      search.stopAndJoin();
       break;
     } else {
-      out << "info string unknown command\n";
+      writeLocked([&]() { out << "info string unknown command\n"; });
     }
-
-    out.flush();
   }
+
+  search.stopAndJoin();
 }

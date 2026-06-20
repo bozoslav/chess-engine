@@ -3,8 +3,10 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <string>
 #include <string_view>
 
+#include "attacks.h"
 #include "types.h"
 #include "zobrist.h"
 
@@ -108,6 +110,38 @@ Piece pieceFromFen(char c) {
       return Piece::BlackKing;
     default:
       return Piece::None;
+  }
+}
+
+char pieceToFen(Piece piece) {
+  switch (piece) {
+    case Piece::WhitePawn:
+      return 'P';
+    case Piece::WhiteKnight:
+      return 'N';
+    case Piece::WhiteBishop:
+      return 'B';
+    case Piece::WhiteRook:
+      return 'R';
+    case Piece::WhiteQueen:
+      return 'Q';
+    case Piece::WhiteKing:
+      return 'K';
+    case Piece::BlackPawn:
+      return 'p';
+    case Piece::BlackKnight:
+      return 'n';
+    case Piece::BlackBishop:
+      return 'b';
+    case Piece::BlackRook:
+      return 'r';
+    case Piece::BlackQueen:
+      return 'q';
+    case Piece::BlackKing:
+      return 'k';
+    case Piece::None:
+    default:
+      return '\0';
   }
 }
 
@@ -304,6 +338,65 @@ bool Board::setFromFen(std::string_view fen) {
   keyHistorySize = 1;
   assert(bitboardsAreConsistent());
   return true;
+}
+
+std::string Board::toFen() const {
+  std::string fen;
+  fen.reserve(90);
+
+  for (int x = 0; x < kBoardSize; ++x) {
+    int empty = 0;
+    for (int y = 0; y < kBoardSize; ++y) {
+      const Piece piece = board[x][y];
+      if (piece == Piece::None) {
+        ++empty;
+        continue;
+      }
+
+      if (empty > 0) {
+        fen.push_back(static_cast<char>('0' + empty));
+        empty = 0;
+      }
+      fen.push_back(pieceToFen(piece));
+    }
+
+    if (empty > 0) fen.push_back(static_cast<char>('0' + empty));
+    if (x + 1 < kBoardSize) fen.push_back('/');
+  }
+
+  fen.push_back(' ');
+  fen.push_back(side == Color::White ? 'w' : 'b');
+  fen.push_back(' ');
+
+  bool hasCastling = false;
+  if (wCastleK) {
+    fen.push_back('K');
+    hasCastling = true;
+  }
+  if (wCastleQ) {
+    fen.push_back('Q');
+    hasCastling = true;
+  }
+  if (bCastleK) {
+    fen.push_back('k');
+    hasCastling = true;
+  }
+  if (bCastleQ) {
+    fen.push_back('q');
+    hasCastling = true;
+  }
+  if (!hasCastling) fen.push_back('-');
+
+  fen.push_back(' ');
+  if (hasEp) {
+    fen.push_back(static_cast<char>('a' + epY));
+    fen.push_back(static_cast<char>('0' + (kBoardSize - epX)));
+  } else {
+    fen.push_back('-');
+  }
+
+  fen += " 0 1";
+  return fen;
 }
 
 bool Board::isInsideBoard(int x, int y) const {
@@ -516,18 +609,29 @@ bool Board::isSquareUnderAttack(int x, int y, Color attackingColor) const {
 }
 
 bool Board::isKingInCheckForSide(Color kingColor) const {
-  const Piece king =
-      kingColor == Color::White ? Piece::WhiteKing : Piece::BlackKing;
+  if (!AttackTables::initialized()) AttackTables::init();
+  const int kingIndex = colorIndex(kingColor);
+  const Color enemy = oppositeColor(kingColor);
+  const int enemyIndex = colorIndex(enemy);
+  const Square square = kingSq[kingIndex];
+  if (square == kNoSquare) return false;
 
-  for (int x = 0; x < kBoardSize; ++x) {
-    for (int y = 0; y < kBoardSize; ++y) {
-      if (board[x][y] == king) {
-        return isSquareUnderAttack(x, y, oppositeColor(kingColor));
-      }
-    }
-  }
+  const Bitboard pawns = pieceBB[enemyIndex][static_cast<int>(PieceType::Pawn)];
+  const Bitboard knights =
+      pieceBB[enemyIndex][static_cast<int>(PieceType::Knight)];
+  const Bitboard bishops =
+      pieceBB[enemyIndex][static_cast<int>(PieceType::Bishop)];
+  const Bitboard rooks = pieceBB[enemyIndex][static_cast<int>(PieceType::Rook)];
+  const Bitboard queens =
+      pieceBB[enemyIndex][static_cast<int>(PieceType::Queen)];
+  const Bitboard king = pieceBB[enemyIndex][static_cast<int>(PieceType::King)];
 
-  return false;
+  return (AttackTables::pawnAttacks(kingColor, square) & pawns) != 0 ||
+         (AttackTables::knightAttacks(square) & knights) != 0 ||
+         (AttackTables::bishopAttacks(square, allBB) & (bishops | queens)) !=
+             0 ||
+         (AttackTables::rookAttacks(square, allBB) & (rooks | queens)) != 0 ||
+         (AttackTables::kingAttacks(square) & king) != 0;
 }
 
 bool Board::isKingInCheck() const { return isKingInCheckForSide(side); }
@@ -633,6 +737,15 @@ void Board::rebuildBitboards() {
   }
 }
 
+void Board::putPieceNoHash(int x, int y, Piece piece) {
+  const Piece previous = board[x][y];
+  if (previous == piece) return;
+
+  removePieceFromBitboards(previous, x, y);
+  board[x][y] = piece;
+  addPieceToBitboards(piece, x, y);
+}
+
 void Board::putPiece(int x, int y, Piece piece) {
   const Piece previous = board[x][y];
   if (previous == piece) return;
@@ -642,9 +755,7 @@ void Board::putPiece(int x, int y, Piece piece) {
     zobristKey ^= zobrist::piece(previous, square);
   }
 
-  removePieceFromBitboards(previous, x, y);
-  board[x][y] = piece;
-  addPieceToBitboards(piece, x, y);
+  putPieceNoHash(x, y, piece);
 
   if (piece != Piece::None) {
     zobristKey ^= zobrist::piece(piece, square);
@@ -738,23 +849,34 @@ bool Board::bitboardsAreConsistent() const {
   return zobristKey == computeZobristKey();
 }
 
-bool Board::makeMove(const Move& move) {
-  if (!isInsideBoard(move.fromX(), move.fromY()) ||
-      !isInsideBoard(move.toX(), move.toY())) {
-    return false;
+bool Board::makeMoveImpl(const Move& move, bool validate) {
+  if (validate) {
+    if (!isInsideBoard(move.fromX(), move.fromY()) ||
+        !isInsideBoard(move.toX(), move.toY())) {
+      return false;
+    }
+    if (move.fromX() == move.toX() && move.fromY() == move.toY()) return false;
   }
-  if (move.fromX() == move.toX() && move.fromY() == move.toY()) return false;
 
+  assert(isInsideBoard(move.fromX(), move.fromY()));
+  assert(isInsideBoard(move.toX(), move.toY()));
   const Piece movingPiece = board[move.fromX()][move.fromY()];
   const Piece targetPiece = board[move.toX()][move.toY()];
 
-  if (movingPiece == Piece::None) return false;
-  if (pieceType(targetPiece) == PieceType::King) return false;
-  if (targetPiece != Piece::None && isSameColor(movingPiece, targetPiece)) {
-    return false;
+  if (validate) {
+    if (movingPiece == Piece::None) return false;
+    if (pieceType(targetPiece) == PieceType::King) return false;
+    if (targetPiece != Piece::None && isSameColor(movingPiece, targetPiece)) {
+      return false;
+    }
+    if (!isCorrectSideToMove(movingPiece)) return false;
+    if (!isValidPieceMove(move, movingPiece, targetPiece)) return false;
   }
-  if (!isCorrectSideToMove(movingPiece)) return false;
-  if (!isValidPieceMove(move, movingPiece, targetPiece)) return false;
+
+  assert(movingPiece != Piece::None);
+  assert(pieceType(targetPiece) != PieceType::King);
+  assert(targetPiece == Piece::None || !isSameColor(movingPiece, targetPiece));
+  assert(isCorrectSideToMove(movingPiece));
   if (histSize >= kMaxHistory) return false;
 
   const Color movingSide = side;
@@ -850,7 +972,7 @@ bool Board::makeMove(const Move& move) {
   side = oppositeColor(side);
   zobristKey ^= zobrist::sideToMove();
 
-  if (isKingInCheckForSide(movingSide)) {
+  if (validate && isKingInCheckForSide(movingSide)) {
     undoMove();
     return false;
   }
@@ -858,6 +980,12 @@ bool Board::makeMove(const Move& move) {
   keyHistory[keyHistorySize++] = zobristKey;
   assert(bitboardsAreConsistent());
   return true;
+}
+
+bool Board::makeMove(const Move& move) { return makeMoveImpl(move, true); }
+
+bool Board::makeGeneratedMove(const Move& move) {
+  return makeMoveImpl(move, false);
 }
 
 bool Board::undoMove() {
@@ -884,16 +1012,16 @@ bool Board::undoMove() {
 
   if (state.wasCastle) {
     const Piece rook = board[state.rookToX][state.rookToY];
-    putPiece(state.rookFromX, state.rookFromY, rook);
-    putPiece(state.rookToX, state.rookToY, Piece::None);
+    putPieceNoHash(state.rookFromX, state.rookFromY, rook);
+    putPieceNoHash(state.rookToX, state.rookToY, Piece::None);
   }
 
-  putPiece(state.move.fromX(), state.move.fromY(), state.movedPiece);
+  putPieceNoHash(state.move.fromX(), state.move.fromY(), state.movedPiece);
   if (state.wasEp) {
-    putPiece(state.move.toX(), state.move.toY(), Piece::None);
-    putPiece(state.capX, state.capY, state.capturedPiece);
+    putPieceNoHash(state.move.toX(), state.move.toY(), Piece::None);
+    putPieceNoHash(state.capX, state.capY, state.capturedPiece);
   } else {
-    putPiece(state.move.toX(), state.move.toY(), state.capturedPiece);
+    putPieceNoHash(state.move.toX(), state.move.toY(), state.capturedPiece);
   }
   side = state.prevSide;
   wCastleK = state.prevWCastleK;
@@ -1029,12 +1157,77 @@ std::uint64_t Board::key() const { return zobristKey; }
 
 int Board::repetitionCount() const {
   int count = 0;
-  for (int index = keyHistorySize - 1; index >= 0; --index) {
+  // Identical positions always have the same side to move, so only positions
+  // with matching ply parity can share the current Zobrist key.
+  for (int index = keyHistorySize - 1; index >= 0; index -= 2) {
     if (keyHistory[index] == zobristKey) ++count;
   }
   return count;
 }
 
-bool Board::hasRepeatedPosition() const { return repetitionCount() >= 2; }
+bool Board::hasRepeatedPosition() const {
+  for (int index = keyHistorySize - 3; index >= 0; index -= 2) {
+    if (keyHistory[index] == zobristKey) return true;
+  }
+  return false;
+}
 
 bool Board::isThreefoldRepetition() const { return repetitionCount() >= 3; }
+
+int Board::ply() const { return histSize; }
+
+std::uint64_t Board::previousKey() const {
+  if (histSize <= 0) return zobristKey;
+  return history[histSize - 1].prevZobristKey;
+}
+
+bool Board::lastMoveWasNull() const {
+  return histSize > 0 && history[histSize - 1].wasNull;
+}
+
+bool Board::lastMoveChangedKingSquare(Color& color) const {
+  if (histSize <= 0) return false;
+
+  const MoveState& state = history[histSize - 1];
+  if (state.wasNull || pieceType(state.movedPiece) != PieceType::King) {
+    return false;
+  }
+
+  color = colorOfPiece(state.movedPiece);
+  return true;
+}
+
+int Board::lastMovePieceDeltas(PieceDelta* deltas, int maxDeltas) const {
+  if (deltas == nullptr || maxDeltas <= 0 || histSize <= 0) return 0;
+
+  const MoveState& state = history[histSize - 1];
+  if (state.wasNull) return 0;
+
+  int count = 0;
+  const auto push = [&](Piece piece, Square from, Square to) {
+    if (piece == Piece::None || count >= maxDeltas) return;
+    deltas[count++] = PieceDelta{piece, from, to};
+  };
+
+  const Square from = state.move.fromSquare();
+  const Square to = state.move.toSquare();
+  if (state.movedPiece == state.placedPiece) {
+    push(state.movedPiece, from, to);
+  } else {
+    push(state.movedPiece, from, kNoSquare);
+    push(state.placedPiece, kNoSquare, to);
+  }
+
+  if (state.capturedPiece != Piece::None) {
+    push(state.capturedPiece, squareFromCoords(state.capX, state.capY),
+         kNoSquare);
+  }
+
+  if (state.wasCastle) {
+    const Piece rook = board[state.rookToX][state.rookToY];
+    push(rook, squareFromCoords(state.rookFromX, state.rookFromY),
+         squareFromCoords(state.rookToX, state.rookToY));
+  }
+
+  return count;
+}

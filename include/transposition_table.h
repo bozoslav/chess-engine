@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "move.h"
 
@@ -22,14 +24,34 @@ struct TranspositionProbe {
 
 class TranspositionTable {
  public:
-  static constexpr std::size_t kBucketCount = 1u << 18;
+  struct TTSlot;
+  struct TTBucket;
+
   static constexpr std::size_t kAssociativity = 4;
-  static constexpr std::size_t kBytes = kBucketCount * 64;
+  static constexpr std::size_t kDefaultHashMb = 128;
+  static constexpr std::size_t kMinHashMb = 1;
+  static constexpr std::size_t kMaxHashMb = 4096;
+
+  TranspositionTable();
+  ~TranspositionTable();
 
   void clear();
+  void resize(std::size_t megabytes);
+  void newSearch();
   bool probe(std::uint64_t key, TranspositionProbe& out) const;
   void store(std::uint64_t key, int depth, int score, TranspositionBound bound,
              Move bestMove);
+  std::size_t hashSizeMb() const;
+  std::size_t bucketCount() const;
+  std::size_t bytes() const;
+  int hashfullPermill() const;
+
+ private:
+  std::unique_ptr<TTBucket[]> buckets_;
+  std::size_t bucketCount_ = 0;
+  std::size_t bucketMask_ = 0;
+  std::size_t bytes_ = 0;
+  std::atomic<std::uint8_t> generation_{0};
 };
 
 TranspositionTable& globalTranspositionTable();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 #include "bitboard.h"
@@ -11,6 +12,13 @@ class Board {
   static constexpr int kBoardSize = 8;
   static constexpr int kColorCount = 2;
   static constexpr int kPieceTypeCount = 7;
+  static constexpr int kMaxHistory = 1024;
+
+  struct PieceDelta {
+    Piece piece = Piece::None;
+    Square from = -1;
+    Square to = -1;
+  };
 
   Board();
 
@@ -31,10 +39,19 @@ class Board {
   int repetitionCount() const;
   bool hasRepeatedPosition() const;
   bool isThreefoldRepetition() const;
+  int ply() const;
+  std::uint64_t previousKey() const;
+  bool lastMoveWasNull() const;
+  bool lastMoveChangedKingSquare(Color& color) const;
+  int lastMovePieceDeltas(PieceDelta* deltas, int maxDeltas) const;
   bool makeMove(const Move& move);
+  // Fast path for moves returned by genLegalMoves()/genLegalNoisyMoves().
+  // The caller guarantees pseudo-legal geometry and king safety.
+  bool makeGeneratedMove(const Move& move);
   bool makeNullMove();
   bool undoNullMove();
   bool setFromFen(std::string_view fen);
+  std::string toFen() const;
 
  private:
   struct MoveState {
@@ -64,8 +81,6 @@ class Board {
     int prevKeyHistorySize;
   };
 
-  static constexpr int kMaxHistory = 1024;
-
   bool isInsideBoard(int x, int y) const;
   bool isCorrectSideToMove(Piece piece) const;
   bool isValidPieceMove(const Move& move, Piece movingPiece,
@@ -85,10 +100,12 @@ class Board {
   void addPieceToBitboards(Piece piece, int x, int y);
   void removePieceFromBitboards(Piece piece, int x, int y);
   void rebuildBitboards();
+  void putPieceNoHash(int x, int y, Piece piece);
   void putPiece(int x, int y, Piece piece);
   int castlingRightsMask() const;
   std::uint64_t computeZobristKey() const;
   bool bitboardsAreConsistent() const;
+  bool makeMoveImpl(const Move& move, bool validate);
 
   Piece board[kBoardSize][kBoardSize];
   Bitboard pieceBB[kColorCount][kPieceTypeCount];

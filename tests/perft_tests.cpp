@@ -1,4 +1,7 @@
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -7,13 +10,19 @@
 #include "board.h"
 #include "evaluate.h"
 #include "movegen.h"
+#include "nnue.h"
 #include "search.h"
+#include "see.h"
 #include "uci.h"
 
 namespace {
 
 constexpr const char* kStartFen =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+#ifndef CHESS_ENGINE_TEST_EVALFILE
+#define CHESS_ENGINE_TEST_EVALFILE ""
+#endif
 
 struct PerftExpectation {
   int depth;
@@ -115,6 +124,29 @@ bool expectMakeUndoRestoresKey(const char* name, const char* fen,
   return ok;
 }
 
+bool expectSeeScore(const char* name, const char* fen, std::string_view text,
+                    int expected) {
+  Board board;
+  if (!board.setFromFen(fen)) {
+    std::cout << "[FAIL] " << name << ": invalid FEN\n";
+    return false;
+  }
+
+  Move move;
+  bool ok = expectBool(name, moveFromUci(board, text, move), true);
+  if (!ok) return false;
+
+  const int actual = staticExchangeEvaluation(board, move);
+  if (actual == expected) {
+    std::cout << "[PASS] " << name << " SEE: " << actual << '\n';
+    return true;
+  }
+
+  std::cout << "[FAIL] " << name << " SEE: expected " << expected << ", got "
+            << actual << '\n';
+  return false;
+}
+
 bool applyUciMove(Board& board, std::string_view text) {
   Move move;
   return moveFromUci(board, text, move) && board.makeMove(move);
@@ -143,6 +175,18 @@ bool runMoveEncodingAndHashTests() {
                    true);
   ok &= expectBool("constructor and FEN hash match",
                    start.key() == fenStart.key(), true);
+  ok &= expectBool("start FEN serializes", start.toFen() == kStartFen, true);
+
+  Board epFen;
+  ok &= expectBool("load ep FEN",
+                   epFen.setFromFen("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/"
+                                    "RNBQKBNR w KQkq e6 0 2"),
+                   true);
+  ok &= expectBool("ep FEN serializes with normalized counters",
+                   epFen.toFen() ==
+                       "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/"
+                       "RNBQKBNR w KQkq e6 0 1",
+                   true);
 
   Board blackToMove;
   ok &= expectBool("load black-to-move FEN",
@@ -275,7 +319,12 @@ bool runUciProtocolTests() {
   std::istringstream input(
       "uci\n"
       "isready\n"
+      "setoption name EvalFile value <empty>\n"
+      "setoption name EvalFile value /tmp/chess_engine_missing.nnue\n"
       "position startpos moves e2e4 e7e5\n"
+      "fen\n"
+      "nnueeval\n"
+      "eval\n"
       "go depth 2\n"
       "go movetime 1\n"
       "go perft 2\n"
@@ -284,20 +333,53 @@ bool runUciProtocolTests() {
   runUci(input, output);
   const std::string text = output.str();
   ok &= expectTextContains("uci id", text, "id name chess_engine");
+  ok &=
+      expectTextContains("uci eval file option", text, "option name EvalFile");
   ok &= expectTextContains("uci ok", text, "uciok");
   ok &= expectTextContains("uci ready", text, "readyok");
+  ok &= expectTextContains("uci bad nnue file", text,
+                           "failed to load Stockfish NNUE");
+  ok &= expectTextContains("uci fen", text,
+                           "fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/"
+                           "PPPP1PPP/RNBQKBNR w KQkq e6 0 1");
+  ok &= expectTextContains("uci nnue eval", text, "nnueeval loaded 0 score 0");
+  ok &= expectTextContains("uci eval command", text,
+                           "NNUE evaluation 0 (side to move, internal units)");
   ok &= expectTextContains("uci depth 1 info", text, "info depth 1");
   ok &= expectTextContains("uci depth 2 info", text, "info depth 2");
   ok &= expectTextContains("uci score", text, "score cp ");
   ok &= expectTextContains("uci pv", text, " pv ");
   ok &= expectTextContains("uci quiet stats", text, "quiet_cutoffs ");
+  ok &= expectTextContains("uci counter stats", text, "counter_uses ");
+  ok &=
+      expectTextContains("uci continuation stats", text, "continuation_uses ");
+  ok &= expectTextContains("uci capture history stats", text,
+                           "capture_history_uses ");
   ok &= expectTextContains("uci pvs stats", text, "pvs_researches ");
   ok &= expectTextContains("uci aspiration stats", text,
                            "aspiration_researches ");
   ok &= expectTextContains("uci null stats", text, "null_attempts ");
   ok &= expectTextContains("uci lmr stats", text, "lmr_attempts ");
+  ok &= expectTextContains("uci see stats", text, "see_prunes ");
+  ok &= expectTextContains("uci futility stats", text, "futility_prunes ");
+  ok &= expectTextContains("uci lmp stats", text, "lmp_prunes ");
   ok &= expectTextContains("uci bestmove", text, "bestmove ");
   ok &= expectTextContains("uci perft", text, "perft depth 2 nodes ");
+
+  std::istringstream stopInput(
+      "position startpos\n"
+      "go infinite\n"
+      "isready\n"
+      "stop\n"
+      "quit\n");
+  std::ostringstream stopOutput;
+  runUci(stopInput, stopOutput);
+  const std::string stopText = stopOutput.str();
+  ok &= expectTextContains("uci async ready while searching", stopText,
+                           "readyok");
+  ok &= expectTextContains("uci async stop bestmove", stopText, "bestmove ");
+  ok &= expectBool("uci async stop has legal fallback",
+                   stopText.find("bestmove 0000") == std::string::npos, true);
 
   std::ostringstream benchOutput;
   ok &= expectBool("bench command", runBench(benchOutput), true);
@@ -306,58 +388,124 @@ bool runUciProtocolTests() {
   return ok;
 }
 
+bool runNnueTests() {
+  bool ok = true;
+
+  clearNnueFile();
+  Board start;
+  int score = 123;
+  ok &= expectBool("nnue unavailable before load", nnue::evaluate(start, score),
+                   false);
+  ok &= expectBool("neutral evaluation without network", evaluate(start) == 0,
+                   true);
+
+  constexpr const char* kInvalidPath = "/tmp/chess_engine_invalid.nnue";
+  {
+    std::ofstream output(kInvalidPath, std::ios::binary);
+    output.write("bad", 3);
+  }
+  ok &= expectBool("reject malformed Stockfish network",
+                   loadNnueFile(kInvalidPath), false);
+  ok &=
+      expectBool("malformed network leaves NNUE disabled", nnueReady(), false);
+  ok &= expectBool("malformed network reports an error",
+                   std::string_view(nnueLoadError()).empty(), false);
+  std::remove(kInvalidPath);
+
+  std::ifstream network(CHESS_ENGINE_TEST_EVALFILE, std::ios::binary);
+  if (network.good()) {
+    network.close();
+    ok &= expectBool("load Stockfish-format integration network",
+                     loadNnueFile(CHESS_ENGINE_TEST_EVALFILE), true);
+    Board incremental;
+    constexpr std::string_view moves[] = {
+        "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6",
+        "b5a4", "g8f6", "e1g1", "f8e7", "f1e1", "b7b5",
+    };
+    for (std::string_view move : moves) {
+      ok &= expectBool("NNUE integration move", applyUciMove(incremental, move),
+                       true);
+      int incrementalScore = 0;
+      int rebuiltScore = 0;
+      ok &= expectBool("incremental Stockfish NNUE evaluation",
+                       nnue::evaluate(incremental, incrementalScore), true);
+      nnue::resetAccumulatorCache();
+      ok &= expectBool("rebuilt Stockfish NNUE evaluation",
+                       nnue::evaluate(incremental, rebuiltScore), true);
+      ok &= expectBool("incremental NNUE equals rebuild",
+                       incrementalScore == rebuiltScore, true);
+    }
+
+    Board randomized;
+    nnue::resetAccumulatorCache();
+    int seededScore = 0;
+    ok &= expectBool("seed randomized NNUE accumulator",
+                     nnue::evaluate(randomized, seededScore), true);
+    std::uint32_t randomState = 0x9e3779b9U;
+    for (int step = 0; step < 512; ++step) {
+      MoveList legalMoves;
+      genLegalMoves(randomized, legalMoves);
+      if (legalMoves.empty()) {
+        randomized = Board();
+        nnue::resetAccumulatorCache();
+        ok &= expectBool("reseed randomized NNUE accumulator",
+                         nnue::evaluate(randomized, seededScore), true);
+        continue;
+      }
+
+      randomState ^= randomState << 13U;
+      randomState ^= randomState >> 17U;
+      randomState ^= randomState << 5U;
+      const Move move = legalMoves[randomState % legalMoves.size()];
+      if (!randomized.makeGeneratedMove(move)) {
+        std::cerr << "FAILED: randomized NNUE move at step " << step << '\n';
+        ok = false;
+        break;
+      }
+
+      int incrementalScore = 0;
+      int rebuiltScore = 0;
+      if (!nnue::evaluate(randomized, incrementalScore)) {
+        std::cerr << "FAILED: randomized incremental NNUE evaluation at step "
+                  << step << '\n';
+        ok = false;
+        break;
+      }
+      nnue::resetAccumulatorCache();
+      if (!nnue::evaluate(randomized, rebuiltScore)) {
+        std::cerr << "FAILED: randomized rebuilt NNUE evaluation at step "
+                  << step << '\n';
+        ok = false;
+        break;
+      }
+      if (incrementalScore != rebuiltScore) {
+        std::cerr << "FAILED: randomized incremental NNUE parity at step "
+                  << step << ": incremental " << incrementalScore
+                  << ", rebuilt " << rebuiltScore << '\n';
+        ok = false;
+        break;
+      }
+    }
+    clearNnueFile();
+  }
+  return ok;
+}
+
 bool runEvaluationAndSearchTests() {
   bool ok = true;
 
+  clearNnueFile();
   Board start;
   ok &= expectBool("start eval is equal", evaluate(start), 0);
 
-  Board whiteMaterial;
-  ok &= expectBool("load white material edge",
-                   whiteMaterial.setFromFen("4k3/8/8/8/8/8/8/4KQ2 w - - 0 1"),
-                   true);
-  ok &= expectBool("white material eval positive",
-                   evaluate(whiteMaterial) > 800, true);
-
-  Board blackToMoveMaterial;
-  ok &= expectBool(
-      "load black material edge",
-      blackToMoveMaterial.setFromFen("4k3/8/8/8/8/8/8/4KQ2 b - - 0 1"), true);
-  ok &= expectBool("black side eval negative",
-                   evaluate(blackToMoveMaterial) < -800, true);
-
-  Board passedPawn;
-  Board blockedPassedPawn;
-  ok &= expectBool("load passed pawn eval",
-                   passedPawn.setFromFen("k7/8/p7/4P3/8/8/8/4K3 w - - 0 1"),
-                   true);
-  ok &= expectBool(
-      "load blocked passed pawn eval",
-      blockedPassedPawn.setFromFen("k7/8/3p4/4P3/8/8/8/4K3 w - - 0 1"), true);
-  ok &= expectBool("passed pawn beats blocked pawn",
-                   evaluate(passedPawn) > evaluate(blockedPassedPawn), true);
-
-  Board connectedPawns;
-  Board doubledPawns;
-  ok &= expectBool(
-      "load connected pawns",
-      connectedPawns.setFromFen("4k3/8/8/8/8/8/2PP4/4K3 w - - 0 1"), true);
-  ok &= expectBool("load doubled pawns",
-                   doubledPawns.setFromFen("4k3/8/8/8/8/2P5/2P5/4K3 w - - 0 1"),
-                   true);
-  ok &= expectBool("connected pawns beat doubled isolated pawns",
-                   evaluate(connectedPawns) > evaluate(doubledPawns), true);
-
-  Board rookOpenFile;
-  Board rookBlockedFile;
-  ok &= expectBool("load rook open file",
-                   rookOpenFile.setFromFen("4k3/8/8/8/8/8/1P6/R3K3 w - - 0 1"),
-                   true);
-  ok &= expectBool(
-      "load rook blocked file",
-      rookBlockedFile.setFromFen("4k3/8/8/8/8/8/P7/R3K3 w - - 0 1"), true);
-  ok &= expectBool("rook open file scores higher",
-                   evaluate(rookOpenFile) > evaluate(rookBlockedFile), true);
+  ok &= expectSeeScore("see free queen capture",
+                       "4k3/8/8/8/8/5q2/8/4KQ2 w - - 0 1", "f1f3", 900);
+  ok &= expectSeeScore("see bad queen capture",
+                       "7k/8/2p5/3p4/4Q3/8/8/7K w - - 0 1", "e4d5", -800);
+  ok &= expectSeeScore("see en passant capture",
+                       "k7/8/8/3pP3/8/8/8/7K w - d6 0 1", "e5d6", 100);
+  ok &= expectSeeScore("see promotion gain", "7k/P7/8/8/8/8/8/7K w - - 0 1",
+                       "a7a8q", 800);
 
   Board captureQueen;
   ok &= expectBool("load queen capture search",
@@ -435,8 +583,6 @@ bool runEvaluationAndSearchTests() {
   const SearchResult aspiration =
       searchBestMove(aspirationStart, aspirationLimits);
   ok &= expectBool("aspiration has best move", aspiration.hasBestMove, true);
-  ok &= expectBool("aspiration researches tight window",
-                   aspiration.aspirationResearches > 0, true);
 
   clearSearchState();
   Board timedStart;
@@ -635,6 +781,7 @@ int main() {
   bool ok = runMoveEncodingAndHashTests();
   ok &= runRepetitionTests();
   ok &= runUciProtocolTests();
+  ok &= runNnueTests();
   ok &= runEvaluationAndSearchTests();
   ok &= runRuleSmokeTests();
   for (const PerftPosition& position : positions) {

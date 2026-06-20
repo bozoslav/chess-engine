@@ -138,6 +138,7 @@ celerybeat.pid
 .env
 .envrc
 .venv
+.venv*/
 env/
 venv/
 ENV/
@@ -212,9 +213,13 @@ __marimo__/
 # private project notes and benchmark history
 docs/
 
+# local downloaded datasets
+/data/
+
 # local third-party source/build artifacts
 external/baselines/
 external/bin/
+external/nnue-pytorch/
 external/cutechess-build/
 external/cutechess-src/
 

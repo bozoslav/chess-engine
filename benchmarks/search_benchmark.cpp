@@ -4,6 +4,7 @@
 #include <iostream>
 
 #include "board.h"
+#include "nnue.h"
 #include "search.h"
 
 namespace {
@@ -18,6 +19,9 @@ struct BenchmarkCase {
   bool useAspirationWindows;
   bool useNullMovePruning;
   bool useLateMoveReductions;
+  bool useStaticExchangeEvaluation;
+  bool useFutilityPruning;
+  bool useLateMovePruning;
 };
 
 struct BenchmarkResult {
@@ -30,7 +34,10 @@ struct BenchmarkResult {
   double meanTTCutoffs;
   double meanTTMoveUses;
   double meanKillerMoveUses;
+  double meanCounterMoveUses;
   double meanHistoryMoveUses;
+  double meanContinuationHistoryUses;
+  double meanCaptureHistoryUses;
   double meanQuietCutoffs;
   double meanPVSResearches;
   double meanAspirationResearches;
@@ -38,6 +45,9 @@ struct BenchmarkResult {
   double meanNullMovePrunes;
   double meanLMRAttempts;
   double meanLMRResearches;
+  double meanSeePrunes;
+  double meanFutilityPrunes;
+  double meanLateMovePrunes;
   int runs;
   bool ok;
 };
@@ -59,6 +69,9 @@ SearchResult runSearchOnce(const BenchmarkCase& testCase, double& seconds) {
   limits.useAspirationWindows = testCase.useAspirationWindows;
   limits.useNullMovePruning = testCase.useNullMovePruning;
   limits.useLateMoveReductions = testCase.useLateMoveReductions;
+  limits.useStaticExchangeEvaluation = testCase.useStaticExchangeEvaluation;
+  limits.useFutilityPruning = testCase.useFutilityPruning;
+  limits.useLateMovePruning = testCase.useLateMovePruning;
   const SearchResult result = searchBestMove(board, limits);
   const auto finish = std::chrono::steady_clock::now();
   const std::chrono::duration<double> elapsed = finish - start;
@@ -70,8 +83,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
   double firstSeconds = 0.0;
   const SearchResult first = runSearchOnce(testCase, firstSeconds);
   if (!first.hasBestMove) {
-    return {&testCase, first, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0,       0.0,   0.0, 0.0, 0.0, 0.0, 0.0, 0,   false};
+    return {&testCase, first, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,       0.0,   0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,       0.0,   0.0, 0.0, 0.0, 0.0, 0,   false};
   }
 
   SearchResult best = first;
@@ -82,7 +96,12 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
   double totalTTCutoffs = static_cast<double>(first.ttCutoffs);
   double totalTTMoveUses = static_cast<double>(first.ttMoveUses);
   double totalKillerMoveUses = static_cast<double>(first.killerMoveUses);
+  double totalCounterMoveUses = static_cast<double>(first.counterMoveUses);
   double totalHistoryMoveUses = static_cast<double>(first.historyMoveUses);
+  double totalContinuationHistoryUses =
+      static_cast<double>(first.continuationHistoryUses);
+  double totalCaptureHistoryUses =
+      static_cast<double>(first.captureHistoryUses);
   double totalQuietCutoffs = static_cast<double>(first.quietCutoffs);
   double totalPVSResearches = static_cast<double>(first.pvsResearches);
   double totalAspirationResearches =
@@ -91,6 +110,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
   double totalNullMovePrunes = static_cast<double>(first.nullMovePrunes);
   double totalLMRAttempts = static_cast<double>(first.lmrAttempts);
   double totalLMRResearches = static_cast<double>(first.lmrResearches);
+  double totalSeePrunes = static_cast<double>(first.seePrunes);
+  double totalFutilityPrunes = static_cast<double>(first.futilityPrunes);
+  double totalLateMovePrunes = static_cast<double>(first.lateMovePrunes);
 
   for (int run = 1; run < runs; ++run) {
     double seconds = 0.0;
@@ -105,7 +127,10 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
               totalTTCutoffs / run,
               totalTTMoveUses / run,
               totalKillerMoveUses / run,
+              totalCounterMoveUses / run,
               totalHistoryMoveUses / run,
+              totalContinuationHistoryUses / run,
+              totalCaptureHistoryUses / run,
               totalQuietCutoffs / run,
               totalPVSResearches / run,
               totalAspirationResearches / run,
@@ -113,6 +138,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
               totalNullMovePrunes / run,
               totalLMRAttempts / run,
               totalLMRResearches / run,
+              totalSeePrunes / run,
+              totalFutilityPrunes / run,
+              totalLateMovePrunes / run,
               run,
               false};
     }
@@ -128,7 +156,11 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
     totalTTCutoffs += static_cast<double>(result.ttCutoffs);
     totalTTMoveUses += static_cast<double>(result.ttMoveUses);
     totalKillerMoveUses += static_cast<double>(result.killerMoveUses);
+    totalCounterMoveUses += static_cast<double>(result.counterMoveUses);
     totalHistoryMoveUses += static_cast<double>(result.historyMoveUses);
+    totalContinuationHistoryUses +=
+        static_cast<double>(result.continuationHistoryUses);
+    totalCaptureHistoryUses += static_cast<double>(result.captureHistoryUses);
     totalQuietCutoffs += static_cast<double>(result.quietCutoffs);
     totalPVSResearches += static_cast<double>(result.pvsResearches);
     totalAspirationResearches +=
@@ -137,6 +169,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
     totalNullMovePrunes += static_cast<double>(result.nullMovePrunes);
     totalLMRAttempts += static_cast<double>(result.lmrAttempts);
     totalLMRResearches += static_cast<double>(result.lmrResearches);
+    totalSeePrunes += static_cast<double>(result.seePrunes);
+    totalFutilityPrunes += static_cast<double>(result.futilityPrunes);
+    totalLateMovePrunes += static_cast<double>(result.lateMovePrunes);
   }
 
   return {&testCase,
@@ -148,7 +183,10 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
           totalTTCutoffs / runs,
           totalTTMoveUses / runs,
           totalKillerMoveUses / runs,
+          totalCounterMoveUses / runs,
           totalHistoryMoveUses / runs,
+          totalContinuationHistoryUses / runs,
+          totalCaptureHistoryUses / runs,
           totalQuietCutoffs / runs,
           totalPVSResearches / runs,
           totalAspirationResearches / runs,
@@ -156,6 +194,9 @@ BenchmarkResult runBenchmark(const BenchmarkCase& testCase, int runs) {
           totalNullMovePrunes / runs,
           totalLMRAttempts / runs,
           totalLMRResearches / runs,
+          totalSeePrunes / runs,
+          totalFutilityPrunes / runs,
+          totalLateMovePrunes / runs,
           runs,
           true};
 }
@@ -167,7 +208,16 @@ double nodesPerSecond(double nodes, double seconds) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc != 2) {
+    std::cerr << "usage: chess_engine_search_benchmark <network.nnue>\n";
+    return 2;
+  }
+  if (!nnue::loadNetwork(argv[1])) {
+    std::cerr << "failed to load Stockfish NNUE: " << nnue::lastError() << '\n';
+    return 1;
+  }
+
   constexpr int kRunsPerCase = 3;
   constexpr const char* kStartFen =
       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -178,45 +228,54 @@ int main() {
 
   constexpr BenchmarkCase cases[] = {
       {"startpos_tt_plain", kStartFen, 5, true, false, false, false, false,
-       false},
+       false, false, false, false},
       {"startpos_tt_ordered_ab", kStartFen, 5, true, true, false, false, false,
-       false},
+       false, false, false, false},
       {"startpos_tt_ordered_pvs_asp_no_null", kStartFen, 5, true, true, true,
-       true, false, false},
+       true, false, false, false, false, false},
       {"startpos_tt_ordered_pvs_asp_null", kStartFen, 5, true, true, true, true,
-       true, false},
+       true, false, false, false, false},
       {"startpos_tt_ordered_pvs_asp_null_lmr", kStartFen, 5, true, true, true,
-       true, true, true},
+       true, true, true, false, false, false},
+      {"startpos_tt_ordered_pvs_asp_null_lmr_see_selective", kStartFen, 5, true,
+       true, true, true, true, true, true, true, true},
       {"kiwipete_tt_plain", kKiwipeteFen, 4, true, false, false, false, false,
-       false},
+       false, false, false, false},
       {"kiwipete_tt_ordered_ab", kKiwipeteFen, 4, true, true, false, false,
-       false, false},
+       false, false, false, false, false},
       {"kiwipete_tt_ordered_pvs_asp_no_null", kKiwipeteFen, 4, true, true, true,
-       true, false, false},
+       true, false, false, false, false, false},
       {"kiwipete_tt_ordered_pvs_asp_null", kKiwipeteFen, 4, true, true, true,
-       true, true, false},
+       true, true, false, false, false, false},
       {"kiwipete_tt_ordered_pvs_asp_null_lmr", kKiwipeteFen, 4, true, true,
-       true, true, true, true},
+       true, true, true, true, false, false, false},
+      {"kiwipete_tt_ordered_pvs_asp_null_lmr_see_selective", kKiwipeteFen, 4,
+       true, true, true, true, true, true, true, true, true},
       {"open_king_tt_plain", kOpenKingFen, 6, true, false, false, false, false,
-       false},
+       false, false, false, false},
       {"open_king_tt_ordered_ab", kOpenKingFen, 6, true, true, false, false,
-       false, false},
+       false, false, false, false, false},
       {"open_king_tt_ordered_pvs_asp_no_null", kOpenKingFen, 6, true, true,
-       true, true, false, false},
+       true, true, false, false, false, false},
       {"open_king_tt_ordered_pvs_asp_null", kOpenKingFen, 6, true, true, true,
-       true, true, false},
+       true, true, false, false, false, false},
       {"open_king_tt_ordered_pvs_asp_null_lmr", kOpenKingFen, 6, true, true,
-       true, true, true, true},
+       true, true, true, true, false, false, false},
+      {"open_king_tt_ordered_pvs_asp_null_lmr_see_selective", kOpenKingFen, 6,
+       true, true, true, true, true, true, true, true, true},
   };
 
   std::cout << std::fixed << std::setprecision(6);
   std::cout << "case,depth,bestmove,score,best_nodes,best_seconds,"
                "best_nodes_per_second,mean_nodes,mean_seconds,"
                "mean_nodes_per_second,mean_tt_hits,mean_tt_cutoffs,"
-               "mean_tt_move_uses,mean_killer_uses,mean_history_uses,"
+               "mean_tt_move_uses,mean_killer_uses,mean_counter_uses,"
+               "mean_history_uses,mean_continuation_uses,"
+               "mean_capture_history_uses,"
                "mean_quiet_cutoffs,mean_pvs_researches,"
                "mean_aspiration_researches,mean_null_attempts,"
                "mean_null_prunes,mean_lmr_attempts,mean_lmr_researches,"
+               "mean_see_prunes,mean_futility_prunes,mean_lmp_prunes,"
                "runs,status\n";
 
   bool ok = true;
@@ -244,12 +303,17 @@ int main() {
               << nodesPerSecond(result.meanNodes, result.meanSeconds) << ','
               << result.meanTTHits << ',' << result.meanTTCutoffs << ','
               << result.meanTTMoveUses << ',' << result.meanKillerMoveUses
-              << ',' << result.meanHistoryMoveUses << ','
-              << result.meanQuietCutoffs << ',' << result.meanPVSResearches
-              << ',' << result.meanAspirationResearches << ','
+              << ',' << result.meanCounterMoveUses << ','
+              << result.meanHistoryMoveUses << ','
+              << result.meanContinuationHistoryUses << ','
+              << result.meanCaptureHistoryUses << ',' << result.meanQuietCutoffs
+              << ',' << result.meanPVSResearches << ','
+              << result.meanAspirationResearches << ','
               << result.meanNullMoveAttempts << ',' << result.meanNullMovePrunes
               << ',' << result.meanLMRAttempts << ','
-              << result.meanLMRResearches << ',' << result.runs << ','
+              << result.meanLMRResearches << ',' << result.meanSeePrunes << ','
+              << result.meanFutilityPrunes << ',' << result.meanLateMovePrunes
+              << ',' << result.runs << ','
               << (result.ok ? "ok" : "search_failed") << '\n';
   }
 
@@ -258,6 +322,7 @@ int main() {
             << nodesPerSecond(totalMeanNodes, totalMeanSeconds)
             << ",0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,"
                "0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,"
+               "0.000000,0.000000,0.000000,0.000000,0.000000,"
             << kRunsPerCase << ',' << (ok ? "ok" : "search_failed") << '\n';
 
   return ok ? 0 : 1;

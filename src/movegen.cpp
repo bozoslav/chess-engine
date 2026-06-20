@@ -196,11 +196,12 @@ Bitboard legalTargetMaskForPiece(Square from, Bitboard targets,
 
 void generateKingMoves(const Board& board, MoveList& moves, Color side,
                        Bitboard all, Bitboard own, Bitboard enemyKing,
-                       Bitboard enemyPieces) {
+                       Bitboard enemyPieces, bool noisyOnly) {
   const Color enemy = oppositeColor(side);
   const Square from = board.kingSquare(side);
   const Bitboard fromBit = squareBit(from);
   Bitboard targets = AttackTables::kingAttacks(from) & ~own & ~enemyKing;
+  if (noisyOnly) targets &= enemyPieces;
   const Bitboard occupancyWithoutKing = all & ~fromBit;
 
   while (targets != 0) {
@@ -254,7 +255,7 @@ void generateCastling(const Board& board, MoveList& moves, Color side,
 
 void generatePawnMoves(const Board& board, MoveList& moves, Color side,
                        const PinInfo& pins, Bitboard evasionMask,
-                       Bitboard checkers) {
+                       Bitboard checkers, bool noisyOnly) {
   const Color enemy = oppositeColor(side);
   const Bitboard all = board.allPieces();
   const Bitboard enemyKing = board.pieces(enemy, PieceType::King);
@@ -273,12 +274,14 @@ void generatePawnMoves(const Board& board, MoveList& moves, Color side,
       Bitboard quietTargets = squareBit(oneForward);
       quietTargets =
           legalTargetMaskForPiece(from, quietTargets, pins, evasionMask);
-      if (quietTargets != 0) {
+      if (quietTargets != 0 &&
+          (!noisyOnly || isPromotionRank(side, oneForward))) {
         pushPawnMove(moves, side, from, oneForward, false);
       }
 
       const Square twoForward = from + 2 * forward;
-      if (isPawnStartRank(side, from) && (all & squareBit(twoForward)) == 0) {
+      if (!noisyOnly && isPawnStartRank(side, from) &&
+          (all & squareBit(twoForward)) == 0) {
         Bitboard doubleTarget = squareBit(twoForward);
         doubleTarget =
             legalTargetMaskForPiece(from, doubleTarget, pins, evasionMask);
@@ -330,7 +333,7 @@ void generatePawnMoves(const Board& board, MoveList& moves, Color side,
 
 void generatePieceMoves(const Board& board, MoveList& moves, Color side,
                         PieceType type, const PinInfo& pins,
-                        Bitboard evasionMask) {
+                        Bitboard evasionMask, bool noisyOnly) {
   const Color enemy = oppositeColor(side);
   const Bitboard own = board.occupancy(side);
   const Bitboard enemyKing = board.pieces(enemy, PieceType::King);
@@ -363,6 +366,7 @@ void generatePieceMoves(const Board& board, MoveList& moves, Color side,
 
     targets &= ~own;
     targets &= ~enemyKing;
+    if (noisyOnly) targets &= board.occupancy(enemy);
     targets = legalTargetMaskForPiece(from, targets, pins, evasionMask);
 
     while (targets != 0) {
@@ -378,9 +382,7 @@ void ensureAttackTablesInitialized() {
   if (!AttackTables::initialized()) AttackTables::init();
 }
 
-}  // namespace
-
-void genLegalMoves(const Board& board, MoveList& moves) {
+void generateLegalMoves(const Board& board, MoveList& moves, bool noisyOnly) {
   ensureAttackTablesInitialized();
   moves.clear();
 
@@ -391,10 +393,12 @@ void genLegalMoves(const Board& board, MoveList& moves) {
   const Bitboard enemyKing = board.pieces(enemy, PieceType::King);
   const Square kingSquare = board.kingSquare(side);
   const Bitboard checkers = attackersTo(board, kingSquare, enemy, all);
+  // In check, every legal evasion is tactically relevant.
+  if (checkers != 0) noisyOnly = false;
 
   generateKingMoves(board, moves, side, all, own, enemyKing,
-                    board.occupancy(enemy) & ~enemyKing);
-  generateCastling(board, moves, side, all, checkers);
+                    board.occupancy(enemy) & ~enemyKing, noisyOnly);
+  if (!noisyOnly) generateCastling(board, moves, side, all, checkers);
 
   if (bitboard::popcount(checkers) >= 2) return;
 
@@ -405,11 +409,25 @@ void genLegalMoves(const Board& board, MoveList& moves) {
     evasionMask = evasionMaskForSingleCheck(board, kingSquare, checker);
   }
 
-  generatePawnMoves(board, moves, side, pins, evasionMask, checkers);
-  generatePieceMoves(board, moves, side, PieceType::Knight, pins, evasionMask);
-  generatePieceMoves(board, moves, side, PieceType::Bishop, pins, evasionMask);
-  generatePieceMoves(board, moves, side, PieceType::Rook, pins, evasionMask);
-  generatePieceMoves(board, moves, side, PieceType::Queen, pins, evasionMask);
+  generatePawnMoves(board, moves, side, pins, evasionMask, checkers, noisyOnly);
+  generatePieceMoves(board, moves, side, PieceType::Knight, pins, evasionMask,
+                     noisyOnly);
+  generatePieceMoves(board, moves, side, PieceType::Bishop, pins, evasionMask,
+                     noisyOnly);
+  generatePieceMoves(board, moves, side, PieceType::Rook, pins, evasionMask,
+                     noisyOnly);
+  generatePieceMoves(board, moves, side, PieceType::Queen, pins, evasionMask,
+                     noisyOnly);
+}
+
+}  // namespace
+
+void genLegalMoves(const Board& board, MoveList& moves) {
+  generateLegalMoves(board, moves, false);
+}
+
+void genLegalNoisyMoves(const Board& board, MoveList& moves) {
+  generateLegalMoves(board, moves, true);
 }
 
 std::uint64_t perft(Board& board, int depth) {
@@ -422,7 +440,7 @@ std::uint64_t perft(Board& board, int depth) {
   if (moves.overflowed()) return 0;
 
   for (const Move move : moves) {
-    if (!board.makeMove(move)) return 0;
+    if (!board.makeGeneratedMove(move)) return 0;
     nodes += perft(board, depth - 1);
     board.undoMove();
   }
