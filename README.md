@@ -78,3 +78,9 @@ Run a small baseline match:
 ```bash
 GAMES=20 TC=1+0.01 CONCURRENCY=4 bash scripts/run_match.sh
 ```
+
+## Lichess bot
+
+The repository includes an official `lichess-bot`-based deployment, safe token
+handling, challenge filters, local integration checks, and service templates.
+Start with [lichess/README.md](lichess/README.md).

@@ -220,8 +220,14 @@ docs/
 external/baselines/
 external/bin/
 external/nnue-pytorch/
+external/lichess-bot/
 external/cutechess-build/
 external/cutechess-src/
+
+# local Lichess bot credentials and runtime output
+/lichess/.env
+/lichess/game_records/
+/lichess/logs/
 
 # local CMake/CLion build directories
 cmake-build-*/
