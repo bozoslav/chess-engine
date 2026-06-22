@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_DIR="${ROOT_DIR}/external/lichess-bot"
 VENV_DIR="${ROOT_DIR}/.venv-lichess"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+BOOK_FILE="${ROOT_DIR}/data/books/Perfect2023.bin"
 
 # Known-good upstream revision, version 2026.6.19.1. Override with
 # LICHESS_BOT_REF=master when intentionally testing a newer upstream version.
@@ -49,6 +50,12 @@ cmake --build "${ROOT_DIR}/cmake-build-release" --target chess_engine
 if [[ ! -f "${ROOT_DIR}/data/stockfish/export/latest.nnue" ]]; then
   echo "error: missing data/stockfish/export/latest.nnue" >&2
   echo "Export or copy the supported Stockfish NNUE network before running the bot." >&2
+  exit 1
+fi
+
+if [[ ! -f "${BOOK_FILE}" ]]; then
+  echo "error: missing ${BOOK_FILE}" >&2
+  echo "Copy the configured Polyglot opening book before running the bot." >&2
   exit 1
 fi
 

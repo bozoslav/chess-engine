@@ -1,0 +1,16 @@
+[Unit]
+Description=Leon Mamic chess engine on Lichess
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__LINUX_USER__
+WorkingDirectory=__REPO_ROOT__
+ExecStart=__REPO_ROOT__/scripts/run_lichess_bot.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

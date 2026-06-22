@@ -1,0 +1,144 @@
+# Tailored from the official lichess-bot config.yml.default.
+# The real token is supplied through LICHESS_BOT_TOKEN, never this tracked file.
+token: "provided-by-LICHESS_BOT_TOKEN"
+url: "https://lichess.org/"
+
+engine:
+  # These paths are relative to the repository root. Always launch with
+  # scripts/run_lichess_bot.sh so the working directory is deterministic.
+  dir: "./cmake-build-release"
+  name: "chess_engine"
+  working_dir: "."
+  protocol: "uci"
+  debug: false
+  ponder: true
+  silence_stderr: false
+
+  # Use a deterministic local book so opening moves have effectively zero
+  # search latency. The ignored binary is validated by setup_lichess_bot.sh.
+  polyglot:
+    enabled: true
+    book:
+      standard:
+        - "data/books/Perfect2023.bin"
+    min_weight: 1
+    selection: "best_move"
+    max_depth: 20
+    normalization: "none"
+  online_moves:
+    chessdb_book:
+      enabled: false
+    lichess_cloud_analysis:
+      enabled: false
+    lichess_opening_explorer:
+      enabled: false
+    online_egtb:
+      enabled: true
+      min_time: 0
+      max_time: 10800
+      max_pieces: 8
+      source: "lichess"
+      move_quality: "best"
+  lichess_bot_tbs:
+    syzygy:
+      enabled: false
+      paths:
+        - "data/syzygy"
+      max_pieces: 6
+      move_quality: "best"
+    gaviota:
+      enabled: false
+
+  draw_or_resign:
+    resign_enabled: false
+    offer_draw_enabled: true
+    offer_draw_score: 2
+    offer_draw_moves: 5
+    offer_draw_min_moves: 15
+
+  # Only options advertised by this engine may appear here. lichess-bot and
+  # python-chess manage protocol options such as ponder themselves.
+  uci_options:
+    EvalFile: "data/stockfish/export/latest.nnue"
+    Threads: 10
+    Hash: 4096
+    SingularExtensions: true
+    MoveOverhead: 250
+
+abort_time: 30
+fake_think_time: false
+rate_limiting_delay: 50
+move_overhead: 500
+max_takebacks_accepted: 0
+quit_after_all_games_finish: true
+
+# Correspondence is not accepted below, but upstream expects this section.
+correspondence:
+  move_time: 60
+  checkin_period: 300
+  disconnect_time: 150
+  ponder: false
+
+challenge:
+  concurrency: 1
+  sort_by: "first"
+  preference: "none"
+  accept_bot: true
+  only_bot: false
+
+  # Accept every normal live clock from 1+0 through Lichess's 3-hour/180-second
+  # limits. This includes bullet, blitz, rapid, and classical while excluding
+  # ultrabullet and correspondence.
+  min_base: 60
+  max_base: 10800
+  min_increment: 0
+  max_increment: 180
+  min_days: 1
+  max_days: 14
+  bullet_requires_increment: false
+
+  variants:
+    - standard
+  time_controls:
+    - bullet
+    - blitz
+    - rapid
+    - classical
+  modes:
+    - rated
+    #- casual want rating honestly not casual on macbook
+
+  #allow_list:
+  #  - "__outgoing_matchmaking_only__" risky race condition but :p
+  max_simultaneous_games_per_user: 1
+  recent_bot_challenge_age: 300
+  max_recent_bot_challenges: 2
+  min_rating: 0
+  max_rating: 4000
+
+greeting:
+  hello: "Hi {opponent}! I am {me}. Good luck!"
+  goodbye: "Good game!"
+  hello_spectators: "Welcome!"
+  goodbye_spectators: "Thanks for watching!"
+
+pgn_directory: "lichess/game_records"
+pgn_file_grouping: "all"
+
+# Accept incoming challenges and seek one rated 3+2 game when idle.
+matchmaking:
+  allow_matchmaking: true
+  allow_during_games: false
+  challenge_timeout: 5
+  challenge_initial_time:
+    - 180
+  challenge_increment:
+    - 0
+  opponent_min_rating: 600
+  opponent_max_rating: 4000
+  opponent_rating_difference: 400
+  rating_preference: "none"
+  challenge_variant: "standard"
+  challenge_mode: "rated"
+  challenge_filter: "fine"
+  include_challenge_block_list: false

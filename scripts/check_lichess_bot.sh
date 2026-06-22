@@ -39,8 +39,12 @@ root = Path(os.environ["ROOT_DIR"])
 config = load_config(str(root / "lichess/config.yml"))
 
 assert config.engine.protocol == "uci"
-assert config.engine.ponder is False
+assert config.engine.ponder is True
 assert config.challenge.concurrency == 1
+assert not config.challenge.allow_list
+assert config.matchmaking.allow_matchmaking is True
+assert config.matchmaking.allow_during_games is False
+assert config.matchmaking.challenge_timeout == 4
 assert config.challenge.accept_bot is True
 assert config.challenge.variants == ["standard"]
 assert config.challenge.time_controls == ["bullet", "blitz", "rapid", "classical"]
@@ -91,6 +95,7 @@ try:
         "EvalFile": str(root / "data/stockfish/export/latest.nnue"),
         "Threads": 1,
         "Hash": 16,
+        "SingularExtensions": True,
     })
     board = chess.Board()
     result = engine.play(board, chess.engine.Limit(time=0.1))
