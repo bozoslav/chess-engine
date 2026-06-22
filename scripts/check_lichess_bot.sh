@@ -44,11 +44,11 @@ assert config.challenge.concurrency == 1
 assert not config.challenge.allow_list
 assert config.matchmaking.allow_matchmaking is True
 assert config.matchmaking.allow_during_games is False
-assert config.matchmaking.challenge_timeout == 4
+assert config.matchmaking.challenge_timeout == 5
 assert config.challenge.accept_bot is True
 assert config.challenge.variants == ["standard"]
 assert config.challenge.time_controls == ["bullet", "blitz", "rapid", "classical"]
-assert set(config.challenge.modes) == {"casual", "rated"}
+assert set(config.challenge.modes) == {"rated"}
 
 profile = {"username": "LocalValidationBot", "perfs": {}}
 
@@ -77,7 +77,7 @@ def supported(speed, base, increment, *, rated=True, variant="standard", bot=Fal
     )
     return accepted
 
-assert supported("bullet", 60, 0, rated=False, bot=True)
+assert supported("bullet", 60, 0, bot=True)
 assert supported("blitz", 180, 2)
 assert supported("rapid", 600, 5)
 assert supported("classical", 10800, 180)

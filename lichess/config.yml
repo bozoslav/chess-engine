@@ -106,10 +106,7 @@ challenge:
     - classical
   modes:
     - rated
-    #- casual want rating honestly not casual on macbook
 
-  #allow_list:
-  #  - "__outgoing_matchmaking_only__" risky race condition but :p
   max_simultaneous_games_per_user: 1
   recent_bot_challenge_age: 300
   max_recent_bot_challenges: 2
@@ -125,7 +122,7 @@ greeting:
 pgn_directory: "lichess/game_records"
 pgn_file_grouping: "all"
 
-# Accept incoming challenges and seek one rated 3+2 game when idle.
+# Accept incoming challenges and seek one rated 3+0 game when idle.
 matchmaking:
   allow_matchmaking: true
   allow_during_games: false
