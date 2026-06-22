@@ -9,6 +9,16 @@ baseline_commit="${BASELINE_COMMIT:-HEAD}"
 games="${GAMES:-100}"
 concurrency="${CONCURRENCY:-1}"
 tc="${TC:-10+0.1}"
+threads="${THREADS:-1}"
+hash_mb="${HASH_MB:-64}"
+openings="${OPENINGS:-${repo_root}/benchmarks/openings_smoke.epd}"
+sprt_elo0="${SPRT_ELO0:-}"
+sprt_elo1="${SPRT_ELO1:-}"
+sprt_alpha="${SPRT_ALPHA:-0.05}"
+sprt_beta="${SPRT_BETA:-0.05}"
+current_singular="${CURRENT_SINGULAR_EXTENSIONS:-}"
+baseline_singular="${BASELINE_SINGULAR_EXTENSIONS:-}"
+current_move_overhead="${CURRENT_MOVE_OVERHEAD:-}"
 timestamp="$(date +%Y%m%d-%H%M%S)"
 out_dir="${repo_root}/docs/rating/matches"
 pgn="${out_dir}/match-${timestamp}.pgn"
@@ -37,14 +47,49 @@ fi
 
 mkdir -p "${out_dir}"
 
+extra_args=()
+if [[ -n "${openings}" ]]; then
+  [[ -f "${openings}" ]] || {
+    echo "openings file not found: ${openings}" >&2
+    exit 1
+  }
+  extra_args+=(
+    -openings "file=${openings}" format=epd order=random policy=round
+  )
+fi
+
+if [[ -n "${sprt_elo0}" || -n "${sprt_elo1}" ]]; then
+  [[ -n "${sprt_elo0}" && -n "${sprt_elo1}" ]] || {
+    echo "SPRT_ELO0 and SPRT_ELO1 must be set together" >&2
+    exit 1
+  }
+  extra_args+=(
+    -sprt "elo0=${sprt_elo0}" "elo1=${sprt_elo1}"
+    "alpha=${sprt_alpha}" "beta=${sprt_beta}"
+  )
+fi
+
+current_engine=(-engine name=current "cmd=${engine_new}" proto=uci)
+baseline_engine=(-engine name=baseline "cmd=${engine_old}" proto=uci)
+if [[ -n "${current_singular}" ]]; then
+  current_engine+=("option.SingularExtensions=${current_singular}")
+fi
+if [[ -n "${current_move_overhead}" ]]; then
+  current_engine+=("option.MoveOverhead=${current_move_overhead}")
+fi
+if [[ -n "${baseline_singular}" ]]; then
+  baseline_engine+=("option.SingularExtensions=${baseline_singular}")
+fi
+
 "${cutechess}" \
-  -engine name=current cmd="${engine_new}" proto=uci \
-  -engine name=baseline cmd="${engine_old}" proto=uci \
-  -each tc="${tc}" \
+  "${current_engine[@]}" \
+  "${baseline_engine[@]}" \
+  -each tc="${tc}" "option.Threads=${threads}" "option.Hash=${hash_mb}" \
   -games "${games}" \
   -rounds 1 \
   -repeat \
   -concurrency "${concurrency}" \
+  "${extra_args[@]}" \
   -recover \
   -pgnout "${pgn}" \
   2>&1 | tee "${log}"

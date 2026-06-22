@@ -8,6 +8,7 @@ PROFILE_RUN="$ROOT/cmake-build-pgo-profiles/$(date +%Y%m%d-%H%M%S)"
 RAW_PATTERN="$PROFILE_RUN/engine-%p.profraw"
 PROFILE="$PROFILE_RUN/chess-engine.profdata"
 NETWORK="$ROOT/data/stockfish/export/latest.nnue"
+JOBS="${JOBS:-2}"
 
 if [[ ! -f "$NETWORK" ]]; then
   echo "NNUE file does not exist: $NETWORK" >&2
@@ -24,7 +25,7 @@ cmake -S "$ROOT" -B "$GEN_BUILD" \
   -DCHESS_ENGINE_PGO=GENERATE \
   -DCHESS_ENGINE_PGO_PROFILE="$RAW_PATTERN"
 
-cmake --build "$GEN_BUILD" -j 10 --target \
+cmake --build "$GEN_BUILD" -j "$JOBS" --target \
   chess_engine_search_benchmark \
   chess_engine_nnue_benchmark \
   chess_engine_perft_benchmark \
@@ -49,8 +50,8 @@ cmake -S "$ROOT" -B "$RELEASE_BUILD" \
   -DCHESS_ENGINE_IPO=ON \
   -DCHESS_ENGINE_PGO=USE \
   -DCHESS_ENGINE_PGO_PROFILE="$PROFILE"
-cmake --build "$RELEASE_BUILD" -j 10
-ctest --test-dir "$RELEASE_BUILD" --output-on-failure
+cmake --build "$RELEASE_BUILD" -j "$JOBS"
+ctest --test-dir "$RELEASE_BUILD" --output-on-failure -j 1
 
 echo "PGO-optimized engine: $RELEASE_BUILD/chess_engine"
 echo "Merged profile: $PROFILE"

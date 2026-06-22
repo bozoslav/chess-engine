@@ -129,6 +129,18 @@ target_link_libraries(chess_engine_scaling_benchmark PRIVATE chess_engine_core)
 add_executable(chess_engine_nnue_benchmark benchmarks/nnue_benchmark.cpp)
 target_link_libraries(chess_engine_nnue_benchmark PRIVATE chess_engine_core)
 
+add_executable(chess_engine_allocation_benchmark
+  benchmarks/allocation_benchmark.cpp
+)
+target_link_libraries(chess_engine_allocation_benchmark PRIVATE chess_engine_core)
+if(BUILD_TESTING)
+  add_test(
+    NAME search_allocation_free
+    COMMAND chess_engine_allocation_benchmark
+            ${CMAKE_SOURCE_DIR}/data/stockfish/export/latest.nnue
+  )
+endif()
+
 add_executable(chess_engine_attacks_benchmark benchmarks/attacks_benchmark.cpp)
 target_link_libraries(chess_engine_attacks_benchmark PRIVATE chess_engine_core)
 

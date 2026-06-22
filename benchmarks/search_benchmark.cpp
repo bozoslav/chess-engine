@@ -22,6 +22,12 @@ struct BenchmarkCase {
   bool useStaticExchangeEvaluation;
   bool useFutilityPruning;
   bool useLateMovePruning;
+  bool useSingularExtensions = false;
+  bool useProbCut = false;
+  bool useReverseFutilityPruning = false;
+  bool useRazoring = false;
+  bool useInternalIterativeReduction = false;
+  bool useCorrectionHistory = false;
 };
 
 struct BenchmarkResult {
@@ -72,6 +78,13 @@ SearchResult runSearchOnce(const BenchmarkCase& testCase, double& seconds) {
   limits.useStaticExchangeEvaluation = testCase.useStaticExchangeEvaluation;
   limits.useFutilityPruning = testCase.useFutilityPruning;
   limits.useLateMovePruning = testCase.useLateMovePruning;
+  limits.useSingularExtensions = testCase.useSingularExtensions;
+  limits.useProbCut = testCase.useProbCut;
+  limits.useReverseFutilityPruning = testCase.useReverseFutilityPruning;
+  limits.useRazoring = testCase.useRazoring;
+  limits.useInternalIterativeReduction =
+      testCase.useInternalIterativeReduction;
+  limits.useCorrectionHistory = testCase.useCorrectionHistory;
   const SearchResult result = searchBestMove(board, limits);
   const auto finish = std::chrono::steady_clock::now();
   const std::chrono::duration<double> elapsed = finish - start;
@@ -263,6 +276,26 @@ int main(int argc, char** argv) {
        true, true, true, true, false, false, false},
       {"open_king_tt_ordered_pvs_asp_null_lmr_see_selective", kOpenKingFen, 6,
        true, true, true, true, true, true, true, true, true},
+      {"startpos_elite_off", kStartFen, 8, true, true, true, true, true, true,
+       true, true, true, false, false},
+      {"startpos_probcut_only", kStartFen, 8, true, true, true, true, true,
+       true, true, true, true, false, true},
+      {"startpos_singular_only", kStartFen, 8, true, true, true, true, true,
+       true, true, true, true, true, false},
+      {"startpos_elite_on", kStartFen, 8, true, true, true, true, true, true,
+       true, true, true, true, true},
+      {"startpos_modern_base", kStartFen, 8, true, true, true, true, true,
+       true, true, true, true, false, true, false, false, false, false},
+      {"startpos_modern_rfp", kStartFen, 8, true, true, true, true, true,
+       true, true, true, true, false, true, true, false, false, false},
+      {"startpos_modern_rfp_razor", kStartFen, 8, true, true, true, true,
+       true, true, true, true, true, false, true, true, true, false, false},
+      {"startpos_modern_rfp_razor_iir", kStartFen, 8, true, true, true, true,
+       true, true, true, true, true, false, true, true, true, true, false},
+      {"startpos_modern_final", kStartFen, 8, true, true, true, true, true,
+       true, true, true, true, true, true, true, true, true, false},
+      {"startpos_modern_all", kStartFen, 8, true, true, true, true, true,
+       true, true, true, true, false, true, true, true, true, true},
   };
 
   std::cout << std::fixed << std::setprecision(6);
