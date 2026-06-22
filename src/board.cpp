@@ -1,8 +1,10 @@
 #include "board.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -26,6 +28,9 @@ constexpr int kKingsideBishopFile = 5;
 constexpr int kKingsideKnightFile = 6;
 constexpr int kKingsideRookFile = Board::kBoardSize - 1;
 constexpr Square kNoSquare = -1;
+constexpr std::uint16_t kHalfmoveValueMask = 0x3fffU;
+constexpr std::uint16_t kHalfmoveUpdatedFlag = 0x8000U;
+constexpr std::uint16_t kFullmoveIncrementedFlag = 0x4000U;
 
 constexpr int colorIndex(Color color) { return static_cast<int>(color); }
 
@@ -173,8 +178,22 @@ bool parseFenSquare(std::string_view square, int& x, int& y) {
   return true;
 }
 
-bool pathIsClear(const Piece board[Board::kBoardSize][Board::kBoardSize],
-                 const Move& move) {
+bool parseFenCounter(std::string_view field, int minimum, int& value) {
+  if (field.empty()) return false;
+
+  int parsed = 0;
+  for (const char c : field) {
+    if (c < '0' || c > '9') return false;
+    const int digit = c - '0';
+    if (parsed > (std::numeric_limits<int>::max() - digit) / 10) return false;
+    parsed = parsed * 10 + digit;
+  }
+  if (parsed < minimum) return false;
+  value = parsed;
+  return true;
+}
+
+bool pathIsClear(const Piece board[bitboard::kSquareCount], const Move& move) {
   const int stepX = (move.toX() > move.fromX()) - (move.toX() < move.fromX());
   const int stepY = (move.toY() > move.fromY()) - (move.toY() < move.fromY());
 
@@ -182,7 +201,7 @@ bool pathIsClear(const Piece board[Board::kBoardSize][Board::kBoardSize],
   int y = move.fromY() + stepY;
 
   while (x != move.toX() || y != move.toY()) {
-    if (board[x][y] != Piece::None) return false;
+    if (board[squareFromCoords(x, y)] != Piece::None) return false;
     x += stepX;
     y += stepY;
   }
@@ -193,35 +212,43 @@ bool pathIsClear(const Piece board[Board::kBoardSize][Board::kBoardSize],
 }  // namespace
 
 Board::Board() {
-  for (int x = 0; x < kBoardSize; ++x) {
-    for (int y = 0; y < kBoardSize; ++y) board[x][y] = Piece::None;
-  }
+  std::fill_n(board, bitboard::kSquareCount, Piece::None);
 
   for (int file = 0; file < kBoardSize; ++file) {
-    board[kBlackPawnRank][file] = Piece::BlackPawn;
-    board[kWhitePawnRank][file] = Piece::WhitePawn;
+    board[squareFromCoords(kBlackPawnRank, file)] = Piece::BlackPawn;
+    board[squareFromCoords(kWhitePawnRank, file)] = Piece::WhitePawn;
   }
 
-  board[kBlackBackRank][kQueensideRookFile] = Piece::BlackRook;
-  board[kBlackBackRank][kKingsideRookFile] = Piece::BlackRook;
-  board[kWhiteBackRank][kQueensideRookFile] = Piece::WhiteRook;
-  board[kWhiteBackRank][kKingsideRookFile] = Piece::WhiteRook;
+  board[squareFromCoords(kBlackBackRank, kQueensideRookFile)] =
+      Piece::BlackRook;
+  board[squareFromCoords(kBlackBackRank, kKingsideRookFile)] = Piece::BlackRook;
+  board[squareFromCoords(kWhiteBackRank, kQueensideRookFile)] =
+      Piece::WhiteRook;
+  board[squareFromCoords(kWhiteBackRank, kKingsideRookFile)] = Piece::WhiteRook;
 
-  board[kBlackBackRank][kQueensideKnightFile] = Piece::BlackKnight;
-  board[kBlackBackRank][kKingsideKnightFile] = Piece::BlackKnight;
-  board[kWhiteBackRank][kQueensideKnightFile] = Piece::WhiteKnight;
-  board[kWhiteBackRank][kKingsideKnightFile] = Piece::WhiteKnight;
+  board[squareFromCoords(kBlackBackRank, kQueensideKnightFile)] =
+      Piece::BlackKnight;
+  board[squareFromCoords(kBlackBackRank, kKingsideKnightFile)] =
+      Piece::BlackKnight;
+  board[squareFromCoords(kWhiteBackRank, kQueensideKnightFile)] =
+      Piece::WhiteKnight;
+  board[squareFromCoords(kWhiteBackRank, kKingsideKnightFile)] =
+      Piece::WhiteKnight;
 
-  board[kBlackBackRank][kQueensideBishopFile] = Piece::BlackBishop;
-  board[kBlackBackRank][kKingsideBishopFile] = Piece::BlackBishop;
-  board[kWhiteBackRank][kQueensideBishopFile] = Piece::WhiteBishop;
-  board[kWhiteBackRank][kKingsideBishopFile] = Piece::WhiteBishop;
+  board[squareFromCoords(kBlackBackRank, kQueensideBishopFile)] =
+      Piece::BlackBishop;
+  board[squareFromCoords(kBlackBackRank, kKingsideBishopFile)] =
+      Piece::BlackBishop;
+  board[squareFromCoords(kWhiteBackRank, kQueensideBishopFile)] =
+      Piece::WhiteBishop;
+  board[squareFromCoords(kWhiteBackRank, kKingsideBishopFile)] =
+      Piece::WhiteBishop;
 
-  board[kBlackBackRank][kQueenFile] = Piece::BlackQueen;
-  board[kWhiteBackRank][kQueenFile] = Piece::WhiteQueen;
+  board[squareFromCoords(kBlackBackRank, kQueenFile)] = Piece::BlackQueen;
+  board[squareFromCoords(kWhiteBackRank, kQueenFile)] = Piece::WhiteQueen;
 
-  board[kBlackBackRank][kKingFile] = Piece::BlackKing;
-  board[kWhiteBackRank][kKingFile] = Piece::WhiteKing;
+  board[squareFromCoords(kBlackBackRank, kKingFile)] = Piece::BlackKing;
+  board[squareFromCoords(kWhiteBackRank, kKingFile)] = Piece::WhiteKing;
 
   side = Color::White;
   wCastleK = true;
@@ -232,6 +259,9 @@ Board::Board() {
   epX = -1;
   epY = -1;
   epSquare = kNoSquare;
+  halfmoveClockValue = 0;
+  fullmoveNumberValue = 1;
+  trackGeneratedHalfmoveValue = false;
   histSize = 0;
 
   rebuildBitboards();
@@ -242,7 +272,7 @@ Board::Board() {
 }
 
 bool Board::setFromFen(std::string_view fen) {
-  Piece parsedBoard[kBoardSize][kBoardSize] = {};
+  Piece parsedBoard[bitboard::kSquareCount] = {};
 
   std::size_t pos = 0;
   std::string_view field;
@@ -266,7 +296,7 @@ bool Board::setFromFen(std::string_view fen) {
 
     const Piece piece = pieceFromFen(c);
     if (piece == Piece::None || y >= kBoardSize) return false;
-    parsedBoard[x][y++] = piece;
+    parsedBoard[squareFromCoords(x, y++)] = piece;
   }
 
   if (x != kBoardSize - 1 || y != kBoardSize) return false;
@@ -316,11 +346,22 @@ bool Board::setFromFen(std::string_view fen) {
     parsedHasEp = true;
   }
 
-  for (int row = 0; row < kBoardSize; ++row) {
-    for (int file = 0; file < kBoardSize; ++file) {
-      board[row][file] = parsedBoard[row][file];
+  int parsedHalfmoveClock = 0;
+  int parsedFullmoveNumber = 1;
+  if (nextFenField(fen, pos, field)) {
+    if (!parseFenCounter(field, 0, parsedHalfmoveClock)) return false;
+    if (!nextFenField(fen, pos, field) ||
+        !parseFenCounter(field, 1, parsedFullmoveNumber)) {
+      return false;
     }
+    if (nextFenField(fen, pos, field)) return false;
   }
+  if (parsedHalfmoveClock > kHalfmoveValueMask ||
+      parsedFullmoveNumber > std::numeric_limits<std::uint16_t>::max()) {
+    return false;
+  }
+
+  std::copy_n(parsedBoard, bitboard::kSquareCount, board);
 
   side = parsedSide;
   wCastleK = parsedWCastleK;
@@ -331,6 +372,9 @@ bool Board::setFromFen(std::string_view fen) {
   epX = parsedEpX;
   epY = parsedEpY;
   epSquare = parsedHasEp ? squareFromCoords(parsedEpX, parsedEpY) : kNoSquare;
+  halfmoveClockValue = parsedHalfmoveClock;
+  fullmoveNumberValue = parsedFullmoveNumber;
+  trackGeneratedHalfmoveValue = false;
   histSize = 0;
   rebuildBitboards();
   zobristKey = computeZobristKey();
@@ -347,7 +391,7 @@ std::string Board::toFen() const {
   for (int x = 0; x < kBoardSize; ++x) {
     int empty = 0;
     for (int y = 0; y < kBoardSize; ++y) {
-      const Piece piece = board[x][y];
+      const Piece piece = board[squareFromCoords(x, y)];
       if (piece == Piece::None) {
         ++empty;
         continue;
@@ -395,7 +439,10 @@ std::string Board::toFen() const {
     fen.push_back('-');
   }
 
-  fen += " 0 1";
+  fen.push_back(' ');
+  fen += std::to_string(halfmoveClockValue);
+  fen.push_back(' ');
+  fen += std::to_string(fullmoveNumberValue);
   return fen;
 }
 
@@ -422,7 +469,7 @@ bool Board::isValidPawnMove(const Move& move, Piece movingPiece,
     if (dx == direction && targetPiece == Piece::None) ok = true;
     if (move.fromX() == startRank && dx == 2 * direction &&
         targetPiece == Piece::None &&
-        board[move.fromX() + direction][move.fromY()] == Piece::None)
+        at(move.fromX() + direction, move.fromY()) == Piece::None)
       ok = true;
   } else if (std::abs(dy) == 1 && dx == direction) {
     if (targetPiece != Piece::None) {
@@ -431,7 +478,7 @@ bool Board::isValidPawnMove(const Move& move, Piece movingPiece,
       const int capX = move.toX() + (isWhitePiece(movingPiece) ? 1 : -1);
       const Piece epPawn =
           isWhitePiece(movingPiece) ? Piece::BlackPawn : Piece::WhitePawn;
-      ok = isInsideBoard(capX, move.toY()) && board[capX][move.toY()] == epPawn;
+      ok = isInsideBoard(capX, move.toY()) && at(capX, move.toY()) == epPawn;
     }
   }
 
@@ -480,11 +527,11 @@ bool Board::isValidKingMove(const Move& move, Piece movingPiece) const {
 
   const int rookY = kingSide ? kKingsideRookFile : kQueensideRookFile;
   const Piece rook = white ? Piece::WhiteRook : Piece::BlackRook;
-  if (board[move.fromX()][rookY] != rook) return false;
+  if (at(move.fromX(), rookY) != rook) return false;
 
   const int step = kingSide ? 1 : -1;
   for (int y = move.fromY() + step; y != rookY; y += step) {
-    if (board[move.fromX()][y] != Piece::None) return false;
+    if (at(move.fromX(), y) != Piece::None) return false;
   }
 
   if (isSquareUnderAttack(move.fromX(), move.fromY() + step,
@@ -525,9 +572,9 @@ bool Board::isSquareUnderAttack(int x, int y, Color attackingColor) const {
       attackingColor == Color::White ? Piece::WhiteKing : Piece::BlackKing;
 
   const int pawnRow = x + (attackingColor == Color::White ? 1 : -1);
-  if (isInsideBoard(pawnRow, y - 1) && board[pawnRow][y - 1] == attackingPawn)
+  if (isInsideBoard(pawnRow, y - 1) && at(pawnRow, y - 1) == attackingPawn)
     return true;
-  if (isInsideBoard(pawnRow, y + 1) && board[pawnRow][y + 1] == attackingPawn)
+  if (isInsideBoard(pawnRow, y + 1) && at(pawnRow, y + 1) == attackingPawn)
     return true;
 
   static const int knightOffsets[8][2] = {
@@ -539,7 +586,7 @@ bool Board::isSquareUnderAttack(int x, int y, Color attackingColor) const {
     const int ny = y + offset[1];
     if (!isInsideBoard(nx, ny)) continue;
 
-    const Piece piece = board[nx][ny];
+    const Piece piece = at(nx, ny);
     if (matchesColor(piece, attackingColor) &&
         pieceType(piece) == PieceType::Knight)
       return true;
@@ -557,7 +604,7 @@ bool Board::isSquareUnderAttack(int x, int y, Color attackingColor) const {
     int ny = y + direction[1];
 
     while (isInsideBoard(nx, ny)) {
-      const Piece piece = board[nx][ny];
+      const Piece piece = at(nx, ny);
       if (piece != Piece::None) {
         if (matchesColor(piece, attackingColor) &&
             (pieceType(piece) == PieceType::Bishop ||
@@ -582,7 +629,7 @@ bool Board::isSquareUnderAttack(int x, int y, Color attackingColor) const {
     int ny = y + direction[1];
 
     while (isInsideBoard(nx, ny)) {
-      const Piece piece = board[nx][ny];
+      const Piece piece = at(nx, ny);
       if (piece != Piece::None) {
         if (matchesColor(piece, attackingColor) &&
             (pieceType(piece) == PieceType::Rook ||
@@ -601,7 +648,7 @@ bool Board::isSquareUnderAttack(int x, int y, Color attackingColor) const {
 
       const int nx = x + dx;
       const int ny = y + dy;
-      if (isInsideBoard(nx, ny) && board[nx][ny] == attackingKing) return true;
+      if (isInsideBoard(nx, ny) && at(nx, ny) == attackingKing) return true;
     }
   }
 
@@ -689,14 +736,13 @@ void Board::clearBitboards() {
   allBB = 0;
 }
 
-void Board::addPieceToBitboards(Piece piece, int x, int y) {
+void Board::addPieceToBitboards(Piece piece, Square square) {
   if (piece == Piece::None) return;
 
   const Color color = colorOfPiece(piece);
   const PieceType type = pieceType(piece);
   const int sideIndex = colorIndex(color);
   const int typeIndex = static_cast<int>(type);
-  const Square square = squareFromCoords(x, y);
   const Bitboard bit = bitboard::bit(square);
 
   pieceBB[sideIndex][typeIndex] |= bit;
@@ -708,14 +754,13 @@ void Board::addPieceToBitboards(Piece piece, int x, int y) {
   }
 }
 
-void Board::removePieceFromBitboards(Piece piece, int x, int y) {
+void Board::removePieceFromBitboards(Piece piece, Square square) {
   if (piece == Piece::None) return;
 
   const Color color = colorOfPiece(piece);
   const PieceType type = pieceType(piece);
   const int sideIndex = colorIndex(color);
   const int typeIndex = static_cast<int>(type);
-  const Square square = squareFromCoords(x, y);
   const Bitboard bit = bitboard::bit(square);
 
   pieceBB[sideIndex][typeIndex] &= ~bit;
@@ -730,36 +775,38 @@ void Board::removePieceFromBitboards(Piece piece, int x, int y) {
 void Board::rebuildBitboards() {
   clearBitboards();
 
-  for (int x = 0; x < kBoardSize; ++x) {
-    for (int y = 0; y < kBoardSize; ++y) {
-      addPieceToBitboards(board[x][y], x, y);
-    }
+  for (Square square = 0; square < bitboard::kSquareCount; ++square) {
+    addPieceToBitboards(board[square], square);
   }
 }
 
-void Board::putPieceNoHash(int x, int y, Piece piece) {
-  const Piece previous = board[x][y];
-  if (previous == piece) return;
-
-  removePieceFromBitboards(previous, x, y);
-  board[x][y] = piece;
-  addPieceToBitboards(piece, x, y);
+void Board::putPieceNoHash(Square square, Piece piece) {
+  assert(square >= 0 && square < bitboard::kSquareCount);
+  assert(piece != Piece::None);
+  assert(board[square] == Piece::None);
+  board[square] = piece;
+  addPieceToBitboards(piece, square);
 }
 
-void Board::putPiece(int x, int y, Piece piece) {
-  const Piece previous = board[x][y];
-  if (previous == piece) return;
+Piece Board::removePieceNoHash(Square square) {
+  assert(square >= 0 && square < bitboard::kSquareCount);
+  const Piece piece = board[square];
+  assert(piece != Piece::None);
+  removePieceFromBitboards(piece, square);
+  board[square] = Piece::None;
+  return piece;
+}
 
-  const Square square = squareFromCoords(x, y);
-  if (previous != Piece::None) {
-    zobristKey ^= zobrist::piece(previous, square);
-  }
+void Board::putPiece(Square square, Piece piece) {
+  putPieceNoHash(square, piece);
+  zobristKey ^= zobrist::piece(piece, square);
+}
 
-  putPieceNoHash(x, y, piece);
-
-  if (piece != Piece::None) {
-    zobristKey ^= zobrist::piece(piece, square);
-  }
+Piece Board::removePiece(Square square) {
+  const Piece piece = board[square];
+  assert(piece != Piece::None);
+  zobristKey ^= zobrist::piece(piece, square);
+  return removePieceNoHash(square);
 }
 
 int Board::castlingRightsMask() const {
@@ -774,12 +821,10 @@ int Board::castlingRightsMask() const {
 std::uint64_t Board::computeZobristKey() const {
   std::uint64_t key = 0;
 
-  for (int x = 0; x < kBoardSize; ++x) {
-    for (int y = 0; y < kBoardSize; ++y) {
-      const Piece piece = board[x][y];
-      if (piece == Piece::None) continue;
-      key ^= zobrist::piece(piece, squareFromCoords(x, y));
-    }
+  for (Square square = 0; square < bitboard::kSquareCount; ++square) {
+    const Piece piece = board[square];
+    if (piece == Piece::None) continue;
+    key ^= zobrist::piece(piece, square);
   }
 
   key ^= zobrist::castling(castlingRightsMask());
@@ -795,26 +840,23 @@ bool Board::bitboardsAreConsistent() const {
   Bitboard expectedAll = 0;
   Square expectedKings[kColorCount] = {kNoSquare, kNoSquare};
 
-  for (int x = 0; x < kBoardSize; ++x) {
-    for (int y = 0; y < kBoardSize; ++y) {
-      const Piece piece = board[x][y];
-      if (piece == Piece::None) continue;
+  for (Square square = 0; square < bitboard::kSquareCount; ++square) {
+    const Piece piece = board[square];
+    if (piece == Piece::None) continue;
 
-      const Color color = colorOfPiece(piece);
-      const PieceType type = pieceType(piece);
-      const int sideIndex = colorIndex(color);
-      const int typeIndex = static_cast<int>(type);
-      const Square square = squareFromCoords(x, y);
-      const Bitboard bit = bitboard::bit(square);
+    const Color color = colorOfPiece(piece);
+    const PieceType type = pieceType(piece);
+    const int sideIndex = colorIndex(color);
+    const int typeIndex = static_cast<int>(type);
+    const Bitboard bit = bitboard::bit(square);
 
-      expectedPieces[sideIndex][typeIndex] |= bit;
-      expectedOccupancy[sideIndex] |= bit;
-      expectedAll |= bit;
+    expectedPieces[sideIndex][typeIndex] |= bit;
+    expectedOccupancy[sideIndex] |= bit;
+    expectedAll |= bit;
 
-      if (type == PieceType::King) {
-        if (expectedKings[sideIndex] != kNoSquare) return false;
-        expectedKings[sideIndex] = square;
-      }
+    if (type == PieceType::King) {
+      if (expectedKings[sideIndex] != kNoSquare) return false;
+      expectedKings[sideIndex] = square;
     }
   }
 
@@ -849,8 +891,9 @@ bool Board::bitboardsAreConsistent() const {
   return zobristKey == computeZobristKey();
 }
 
-bool Board::makeMoveImpl(const Move& move, bool validate) {
-  if (validate) {
+template <bool Validate, bool UpdateHalfmove, bool UpdateFullmove>
+bool Board::makeMoveImpl(const Move& move) {
+  if constexpr (Validate) {
     if (!isInsideBoard(move.fromX(), move.fromY()) ||
         !isInsideBoard(move.toX(), move.toY())) {
       return false;
@@ -860,10 +903,12 @@ bool Board::makeMoveImpl(const Move& move, bool validate) {
 
   assert(isInsideBoard(move.fromX(), move.fromY()));
   assert(isInsideBoard(move.toX(), move.toY()));
-  const Piece movingPiece = board[move.fromX()][move.fromY()];
-  const Piece targetPiece = board[move.toX()][move.toY()];
+  const Square from = move.fromSquare();
+  const Square to = move.toSquare();
+  const Piece movingPiece = board[from];
+  const Piece targetPiece = board[to];
 
-  if (validate) {
+  if constexpr (Validate) {
     if (movingPiece == Piece::None) return false;
     if (pieceType(targetPiece) == PieceType::King) return false;
     if (targetPiece != Piece::None && isSameColor(movingPiece, targetPiece)) {
@@ -886,15 +931,12 @@ bool Board::makeMoveImpl(const Move& move, bool validate) {
   state.movedPiece = movingPiece;
   state.placedPiece = movingPiece;
   state.capturedPiece = targetPiece;
-  state.capX = move.toX();
-  state.capY = move.toY();
+  state.capturedSquare = to;
   state.wasNull = false;
   state.wasEp = false;
   state.wasCastle = false;
-  state.rookFromX = -1;
-  state.rookFromY = -1;
-  state.rookToX = -1;
-  state.rookToY = -1;
+  state.rookFrom = kNoSquare;
+  state.rookTo = kNoSquare;
   state.prevSide = side;
   state.prevWCastleK = wCastleK;
   state.prevWCastleQ = wCastleQ;
@@ -904,6 +946,13 @@ bool Board::makeMoveImpl(const Move& move, bool validate) {
   state.prevEpX = epX;
   state.prevEpY = epY;
   state.prevEpSquare = epSquare;
+  if constexpr (UpdateHalfmove || UpdateFullmove) {
+    state.prevHalfmoveState =
+        UpdateHalfmove
+            ? static_cast<std::uint16_t>(halfmoveClockValue |
+                                         kHalfmoveUpdatedFlag)
+            : 0;
+  }
   state.prevZobristKey = zobristKey;
   state.prevKeyHistorySize = keyHistorySize;
 
@@ -920,10 +969,10 @@ bool Board::makeMoveImpl(const Move& move, bool validate) {
        move.toY() == epY);
   if (isEnPassant) {
     state.wasEp = true;
-    state.capX = move.toX() + (white ? 1 : -1);
-    state.capY = move.toY();
-    state.capturedPiece = board[state.capX][state.capY];
-    putPiece(state.capX, state.capY, Piece::None);
+    state.capturedSquare =
+        squareFromCoords(move.toX() + (white ? 1 : -1), move.toY());
+    state.capturedPiece = board[state.capturedSquare];
+    removePiece(state.capturedSquare);
   }
 
   if (movingType == PieceType::Pawn && move.isPromotion()) {
@@ -939,20 +988,20 @@ bool Board::makeMoveImpl(const Move& move, bool validate) {
        std::abs(move.toY() - move.fromY()) == 2);
   if (isCastle) {
     state.wasCastle = true;
-    state.rookFromX = move.fromX();
-    state.rookToX = move.fromX();
-    state.rookFromY =
+    const int rookFromY =
         move.toY() > move.fromY() ? kKingsideRookFile : kQueensideRookFile;
-    state.rookToY =
+    const int rookToY =
         move.toY() > move.fromY() ? kKingsideBishopFile : kQueenFile;
+    state.rookFrom = squareFromCoords(move.fromX(), rookFromY);
+    state.rookTo = squareFromCoords(move.fromX(), rookToY);
   }
 
-  putPiece(move.toX(), move.toY(), state.placedPiece);
-  putPiece(move.fromX(), move.fromY(), Piece::None);
+  if (targetPiece != Piece::None && !state.wasEp) removePiece(to);
+  removePiece(from);
+  putPiece(to, state.placedPiece);
   if (state.wasCastle) {
-    const Piece rook = board[state.rookFromX][state.rookFromY];
-    putPiece(state.rookToX, state.rookToY, rook);
-    putPiece(state.rookFromX, state.rookFromY, Piece::None);
+    const Piece rook = removePiece(state.rookFrom);
+    putPiece(state.rookTo, rook);
   }
 
   updateCastlingRights(move, movingPiece, targetPiece);
@@ -967,14 +1016,30 @@ bool Board::makeMoveImpl(const Move& move, bool validate) {
     epY = move.fromY();
     epSquare = squareFromCoords(epX, epY);
   }
+  if constexpr (UpdateHalfmove) {
+    if (movingType == PieceType::Pawn || state.capturedPiece != Piece::None) {
+      halfmoveClockValue = 0;
+    } else if (halfmoveClockValue < kHalfmoveValueMask) {
+      ++halfmoveClockValue;
+    }
+  }
+  if constexpr (UpdateFullmove) {
+    if (movingSide == Color::Black &&
+        fullmoveNumberValue < std::numeric_limits<std::uint16_t>::max()) {
+      ++fullmoveNumberValue;
+      state.prevHalfmoveState |= kFullmoveIncrementedFlag;
+    }
+  }
   zobristKey ^= zobrist::castling(castlingRightsMask());
   if (hasEp) zobristKey ^= zobrist::enPassant(epSquare);
   side = oppositeColor(side);
   zobristKey ^= zobrist::sideToMove();
 
-  if (validate && isKingInCheckForSide(movingSide)) {
-    undoMove();
-    return false;
+  if constexpr (Validate) {
+    if (isKingInCheckForSide(movingSide)) {
+      undoMove();
+      return false;
+    }
   }
 
   keyHistory[keyHistorySize++] = zobristKey;
@@ -982,13 +1047,18 @@ bool Board::makeMoveImpl(const Move& move, bool validate) {
   return true;
 }
 
-bool Board::makeMove(const Move& move) { return makeMoveImpl(move, true); }
-
-bool Board::makeGeneratedMove(const Move& move) {
-  return makeMoveImpl(move, false);
+bool Board::makeMove(const Move& move) {
+  return makeMoveImpl<true, true, true>(move);
 }
 
-bool Board::undoMove() {
+bool Board::makeGeneratedMove(const Move& move) {
+  return trackGeneratedHalfmoveValue
+             ? makeMoveImpl<false, true, false>(move)
+             : makeMoveImpl<false, false, false>(move);
+}
+
+template <bool RestoreMoveCounters>
+bool Board::undoMoveImpl() {
   if (histSize == 0) return false;
 
   const MoveState& state = history[--histSize];
@@ -1003,6 +1073,7 @@ bool Board::undoMove() {
     epX = state.prevEpX;
     epY = state.prevEpY;
     epSquare = state.prevEpSquare;
+    halfmoveClockValue = state.prevHalfmoveState & kHalfmoveValueMask;
     zobristKey = state.prevZobristKey;
     keyHistorySize = state.prevKeyHistorySize;
 
@@ -1011,17 +1082,14 @@ bool Board::undoMove() {
   }
 
   if (state.wasCastle) {
-    const Piece rook = board[state.rookToX][state.rookToY];
-    putPieceNoHash(state.rookFromX, state.rookFromY, rook);
-    putPieceNoHash(state.rookToX, state.rookToY, Piece::None);
+    const Piece rook = removePieceNoHash(state.rookTo);
+    putPieceNoHash(state.rookFrom, rook);
   }
 
-  putPieceNoHash(state.move.fromX(), state.move.fromY(), state.movedPiece);
-  if (state.wasEp) {
-    putPieceNoHash(state.move.toX(), state.move.toY(), Piece::None);
-    putPieceNoHash(state.capX, state.capY, state.capturedPiece);
-  } else {
-    putPieceNoHash(state.move.toX(), state.move.toY(), state.capturedPiece);
+  removePieceNoHash(state.move.toSquare());
+  putPieceNoHash(state.move.fromSquare(), state.movedPiece);
+  if (state.capturedPiece != Piece::None) {
+    putPieceNoHash(state.capturedSquare, state.capturedPiece);
   }
   side = state.prevSide;
   wCastleK = state.prevWCastleK;
@@ -1032,11 +1100,26 @@ bool Board::undoMove() {
   epX = state.prevEpX;
   epY = state.prevEpY;
   epSquare = state.prevEpSquare;
+  if constexpr (RestoreMoveCounters) {
+    if ((state.prevHalfmoveState & kHalfmoveUpdatedFlag) != 0) {
+      halfmoveClockValue = state.prevHalfmoveState & kHalfmoveValueMask;
+    }
+    if ((state.prevHalfmoveState & kFullmoveIncrementedFlag) != 0) {
+      --fullmoveNumberValue;
+    }
+  }
   zobristKey = state.prevZobristKey;
   keyHistorySize = state.prevKeyHistorySize;
 
   assert(bitboardsAreConsistent());
   return true;
+}
+
+bool Board::undoMove() { return undoMoveImpl<true>(); }
+
+bool Board::undoGeneratedMove() {
+  return trackGeneratedHalfmoveValue ? undoMoveImpl<true>()
+                                     : undoMoveImpl<false>();
 }
 
 bool Board::makeNullMove() {
@@ -1056,6 +1139,7 @@ bool Board::makeNullMove() {
   state.prevEpX = epX;
   state.prevEpY = epY;
   state.prevEpSquare = epSquare;
+  state.prevHalfmoveState = halfmoveClockValue;
   state.prevZobristKey = zobristKey;
   state.prevKeyHistorySize = keyHistorySize;
 
@@ -1117,7 +1201,9 @@ const char* pieceGlyph(Piece piece) {
 
 void Board::printBoard() const {
   for (int x = 0; x < kBoardSize; ++x) {
-    for (int y = 0; y < kBoardSize; ++y) std::cout << pieceGlyph(board[x][y]);
+    for (int y = 0; y < kBoardSize; ++y) {
+      std::cout << pieceGlyph(at(x, y));
+    }
     std::cout << '\n';
   }
   std::cout << "\n";
@@ -1125,7 +1211,11 @@ void Board::printBoard() const {
 
 Color Board::sideToMove() const { return side; }
 
-Piece Board::at(int x, int y) const { return board[x][y]; }
+Piece Board::at(Square square) const noexcept { return board[square]; }
+
+Piece Board::at(int x, int y) const noexcept {
+  return board[squareFromCoords(x, y)];
+}
 
 Bitboard Board::pieces(Color color, PieceType type) const {
   return pieceBB[colorIndex(color)][static_cast<int>(type)];
@@ -1154,6 +1244,39 @@ bool Board::canCastleQueenSide(Color color) const {
 }
 
 std::uint64_t Board::key() const { return zobristKey; }
+
+int Board::halfmoveClock() const { return halfmoveClockValue; }
+
+int Board::fullmoveNumber() const { return fullmoveNumberValue; }
+
+bool Board::isFiftyMoveDraw() const { return halfmoveClockValue >= 100; }
+
+bool Board::tracksGeneratedHalfmoves() const {
+  return trackGeneratedHalfmoveValue;
+}
+
+void Board::setTrackGeneratedHalfmoves(bool enabled) {
+  trackGeneratedHalfmoveValue = enabled;
+}
+
+bool Board::isInsufficientMaterial() const {
+  const Bitboard kings = pieces(Color::White, PieceType::King) |
+                         pieces(Color::Black, PieceType::King);
+  const Bitboard nonKings = allBB ^ kings;
+  if (nonKings == 0) return true;
+
+  const Bitboard bishops = pieces(Color::White, PieceType::Bishop) |
+                           pieces(Color::Black, PieceType::Bishop);
+  if (nonKings == bishops) {
+    constexpr Bitboard kDarkSquares = 0xAA55AA55AA55AA55ULL;
+    return (bishops & kDarkSquares) == 0 ||
+           (bishops & ~kDarkSquares) == 0;
+  }
+
+  const Bitboard knights = pieces(Color::White, PieceType::Knight) |
+                           pieces(Color::Black, PieceType::Knight);
+  return nonKings == knights && bitboard::popcount(knights) == 1;
+}
 
 int Board::repetitionCount() const {
   int count = 0;
@@ -1219,14 +1342,12 @@ int Board::lastMovePieceDeltas(PieceDelta* deltas, int maxDeltas) const {
   }
 
   if (state.capturedPiece != Piece::None) {
-    push(state.capturedPiece, squareFromCoords(state.capX, state.capY),
-         kNoSquare);
+    push(state.capturedPiece, state.capturedSquare, kNoSquare);
   }
 
   if (state.wasCastle) {
-    const Piece rook = board[state.rookToX][state.rookToY];
-    push(rook, squareFromCoords(state.rookFromX, state.rookFromY),
-         squareFromCoords(state.rookToX, state.rookToY));
+    const Piece rook = board[state.rookTo];
+    push(rook, state.rookFrom, state.rookTo);
   }
 
   return count;

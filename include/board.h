@@ -23,10 +23,12 @@ class Board {
   Board();
 
   bool undoMove();
+  bool undoGeneratedMove();
   void printBoard() const;
   Color sideToMove() const;
   bool isKingInCheck() const;
-  Piece at(int x, int y) const;
+  Piece at(Square square) const noexcept;
+  Piece at(int x, int y) const noexcept;
   Bitboard pieces(Color color, PieceType type) const;
   Bitboard occupancy(Color color) const;
   Bitboard allPieces() const;
@@ -36,6 +38,12 @@ class Board {
   bool canCastleKingSide(Color color) const;
   bool canCastleQueenSide(Color color) const;
   std::uint64_t key() const;
+  int halfmoveClock() const;
+  int fullmoveNumber() const;
+  bool isFiftyMoveDraw() const;
+  bool isInsufficientMaterial() const;
+  bool tracksGeneratedHalfmoves() const;
+  void setTrackGeneratedHalfmoves(bool enabled);
   int repetitionCount() const;
   bool hasRepeatedPosition() const;
   bool isThreefoldRepetition() const;
@@ -59,15 +67,12 @@ class Board {
     Piece movedPiece;
     Piece placedPiece;
     Piece capturedPiece;
-    int capX;
-    int capY;
+    Square capturedSquare;
     bool wasNull;
     bool wasEp;
     bool wasCastle;
-    int rookFromX;
-    int rookFromY;
-    int rookToX;
-    int rookToY;
+    Square rookFrom;
+    Square rookTo;
     Color prevSide;
     bool prevWCastleK;
     bool prevWCastleQ;
@@ -77,6 +82,7 @@ class Board {
     int prevEpX;
     int prevEpY;
     Square prevEpSquare;
+    std::uint16_t prevHalfmoveState;
     std::uint64_t prevZobristKey;
     int prevKeyHistorySize;
   };
@@ -97,17 +103,22 @@ class Board {
   void updateCastlingRights(const Move& move, Piece movingPiece,
                             Piece capturedPiece);
   void clearBitboards();
-  void addPieceToBitboards(Piece piece, int x, int y);
-  void removePieceFromBitboards(Piece piece, int x, int y);
+  void addPieceToBitboards(Piece piece, Square square);
+  void removePieceFromBitboards(Piece piece, Square square);
   void rebuildBitboards();
-  void putPieceNoHash(int x, int y, Piece piece);
-  void putPiece(int x, int y, Piece piece);
+  void putPieceNoHash(Square square, Piece piece);
+  Piece removePieceNoHash(Square square);
+  void putPiece(Square square, Piece piece);
+  Piece removePiece(Square square);
   int castlingRightsMask() const;
   std::uint64_t computeZobristKey() const;
   bool bitboardsAreConsistent() const;
-  bool makeMoveImpl(const Move& move, bool validate);
+  template <bool Validate, bool UpdateHalfmove, bool UpdateFullmove>
+  bool makeMoveImpl(const Move& move);
+  template <bool RestoreMoveCounters>
+  bool undoMoveImpl();
 
-  Piece board[kBoardSize][kBoardSize];
+  Piece board[bitboard::kSquareCount];
   Bitboard pieceBB[kColorCount][kPieceTypeCount];
   Bitboard occupancyBB[kColorCount];
   Bitboard allBB;
@@ -121,6 +132,9 @@ class Board {
   int epX;
   int epY;
   Square epSquare;
+  std::uint16_t halfmoveClockValue;
+  std::uint16_t fullmoveNumberValue;
+  bool trackGeneratedHalfmoveValue;
   std::uint64_t zobristKey;
   MoveState history[kMaxHistory];
   std::uint64_t keyHistory[kMaxHistory + 1];

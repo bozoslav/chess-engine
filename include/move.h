@@ -26,7 +26,9 @@ enum class MoveFlag : std::uint8_t {
 
 class Move {
  public:
-  constexpr Move() = default;
+  // Deliberately trivial: default-initialized MoveList storage is not cleared.
+  // Use Move{} when a zero/sentinel move is required.
+  Move() = default;
 
   constexpr Move(int fromX, int fromY, int toX, int toY,
                  PieceType promo = PieceType::None)
@@ -181,7 +183,7 @@ class Move {
     }
   }
 
-  std::uint16_t data_ = 0;
+  std::uint16_t data_;
 };
 
 static_assert(sizeof(Move) == sizeof(std::uint16_t));

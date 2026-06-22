@@ -13,6 +13,7 @@
 #include "nnue.h"
 #include "search.h"
 #include "see.h"
+#include "transposition_table.h"
 #include "uci.h"
 
 namespace {
@@ -71,6 +72,69 @@ bool expectGeneratedMove(const char* name, const char* fen, int fromX,
   genLegalMoves(board, moves);
   const bool actual = containsMove(moves, fromX, fromY, toX, toY);
   return expectBool(name, actual, expected);
+}
+
+bool containsRawMove(const MoveList& moves, Move move) {
+  for (const Move candidate : moves) {
+    if (candidate.raw() == move.raw()) return true;
+  }
+  return false;
+}
+
+bool runStagedMoveGenerationTests() {
+  constexpr const char* kPositions[] = {
+      kStartFen,
+      "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/"
+      "PPPBBPPP/R3K2R w KQkq - 0 1",
+      "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1",
+      "7k/P7/8/8/8/8/8/7K w - - 0 1",
+  };
+
+  bool ok = true;
+  for (const char* fen : kPositions) {
+    Board board;
+    ok &=
+        expectBool("load staged movegen position", board.setFromFen(fen), true);
+
+    MoveList all;
+    MoveList captures;
+    MoveList quiets;
+    genLegalMoves(board, all);
+    genLegalCaptures(board, captures);
+    genLegalQuiets(board, quiets);
+
+    ok &= expectBool(
+        "staged movegen has no overflow",
+        !all.overflowed() && !captures.overflowed() && !quiets.overflowed(),
+        true);
+    ok &= expectBool("captures and quiets partition all legal moves",
+                     captures.size() + quiets.size() == all.size(), true);
+    for (const Move move : captures) {
+      ok &=
+          expectBool("capture stage contains captures", move.isCapture(), true);
+      ok &= expectBool("capture stage move is legal",
+                       containsRawMove(all, move), true);
+    }
+    for (const Move move : quiets) {
+      ok &=
+          expectBool("quiet stage excludes captures", move.isCapture(), false);
+      ok &= expectBool("quiet stage move is legal", containsRawMove(all, move),
+                       true);
+    }
+    for (const Move move : all) {
+      ok &= expectBool(
+          "all legal moves appear in one staged list",
+          containsRawMove(captures, move) || containsRawMove(quiets, move),
+          true);
+    }
+  }
+
+  Board indexed;
+  ok &= expectBool("flat mailbox a1 matches coordinate access",
+                   indexed.at(0) == indexed.at(7, 0), true);
+  ok &= expectBool("flat mailbox h8 matches coordinate access",
+                   indexed.at(63) == indexed.at(0, 7), true);
+  return ok;
 }
 
 bool expectUciMove(const char* name, const char* fen, std::string_view text,
@@ -137,13 +201,17 @@ bool expectSeeScore(const char* name, const char* fen, std::string_view text,
   if (!ok) return false;
 
   const int actual = staticExchangeEvaluation(board, move);
-  if (actual == expected) {
+  const bool thresholdExact = staticExchangeNonLosing(board, move, expected);
+  const bool thresholdAbove =
+      staticExchangeNonLosing(board, move, expected + 1);
+  if (actual == expected && thresholdExact && !thresholdAbove) {
     std::cout << "[PASS] " << name << " SEE: " << actual << '\n';
     return true;
   }
 
   std::cout << "[FAIL] " << name << " SEE: expected " << expected << ", got "
-            << actual << '\n';
+            << actual << ", threshold_exact " << thresholdExact
+            << ", threshold_above " << thresholdAbove << '\n';
   return false;
 }
 
@@ -160,6 +228,8 @@ bool expectTextContains(const char* name, const std::string& text,
 bool runMoveEncodingAndHashTests() {
   bool ok = true;
 
+  ok &=
+      expectBool("value-initialized move is sentinel", Move{}.raw() == 0, true);
   Move doublePush(6, 4, 4, 4, MoveFlag::DoublePawnPush);
   ok &= expectBool("move uci write", doublePush.toUci() == "e2e4", true);
   ok &= expectBool("move from square",
@@ -182,11 +252,53 @@ bool runMoveEncodingAndHashTests() {
                    epFen.setFromFen("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/"
                                     "RNBQKBNR w KQkq e6 0 2"),
                    true);
-  ok &= expectBool("ep FEN serializes with normalized counters",
+  ok &= expectBool("ep FEN preserves counters",
                    epFen.toFen() ==
                        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/"
-                       "RNBQKBNR w KQkq e6 0 1",
+                       "RNBQKBNR w KQkq e6 0 2",
                    true);
+
+  Board clocks;
+  ok &= expectBool("load FEN clocks",
+                   clocks.setFromFen("8/8/8/8/8/8/6k1/K7 w - - 99 42"),
+                   true);
+  ok &= expectBool("halfmove clock parsed", clocks.halfmoveClock(), 99);
+  ok &= expectBool("fullmove number parsed", clocks.fullmoveNumber(), 42);
+  ok &= expectBool("quiet move increments clock", applyUciMove(clocks, "a1b1"),
+                   true);
+  ok &= expectBool("quiet move reaches 50-move boundary",
+                   clocks.isFiftyMoveDraw(), true);
+  ok &= expectBool("white move preserves fullmove number",
+                   clocks.fullmoveNumber(), 42);
+  ok &= expectBool("undo clock move", clocks.undoMove(), true);
+  ok &= expectBool("undo restores halfmove clock", clocks.halfmoveClock(), 99);
+  ok &= expectBool("undo restores fullmove number", clocks.fullmoveNumber(),
+                   42);
+
+  Board blackClock;
+  ok &= expectBool("load black clock",
+                   blackClock.setFromFen("7k/8/8/8/8/8/8/K7 b - - 7 42"),
+                   true);
+  ok &= expectBool("black quiet move", applyUciMove(blackClock, "h8g8"), true);
+  ok &= expectBool("black quiet increments halfmove",
+                   blackClock.halfmoveClock(), 8);
+  ok &= expectBool("black move increments fullmove", blackClock.fullmoveNumber(),
+                   43);
+
+  Board pawnClock;
+  ok &= expectBool("load pawn clock",
+                   pawnClock.setFromFen("7k/8/8/8/8/8/P7/7K w - - 99 42"),
+                   true);
+  ok &= expectBool("pawn clock move", applyUciMove(pawnClock, "a2a3"), true);
+  ok &= expectBool("pawn move resets halfmove", pawnClock.halfmoveClock(), 0);
+
+  Board invalidClock;
+  ok &= expectBool("reject negative halfmove clock",
+                   invalidClock.setFromFen("8/8/8/8/8/8/6k1/K7 w - - -1 1"),
+                   false);
+  ok &= expectBool("reject zero fullmove number",
+                   invalidClock.setFromFen("8/8/8/8/8/8/6k1/K7 w - - 0 0"),
+                   false);
 
   Board blackToMove;
   ok &= expectBool("load black-to-move FEN",
@@ -229,6 +341,10 @@ bool runMoveEncodingAndHashTests() {
                    nullMoveStart.sideToMove() == Color::Black, true);
   ok &= expectBool("null move changes key", nullMoveStart.key() != nullStartKey,
                    true);
+  ok &= expectBool("null move preserves halfmove clock",
+                   nullMoveStart.halfmoveClock(), 0);
+  ok &= expectBool("null move preserves fullmove number",
+                   nullMoveStart.fullmoveNumber(), 1);
   ok &= expectBool("undo null move", nullMoveStart.undoNullMove(), true);
   ok &= expectBool("undo null restores side",
                    nullMoveStart.sideToMove() == Color::White, true);
@@ -298,6 +414,83 @@ bool runRepetitionTests() {
   return ok;
 }
 
+bool runEndgameRuleTests() {
+  bool ok = true;
+
+  Board bareKings;
+  ok &= expectBool("load bare kings",
+                   bareKings.setFromFen("7k/8/8/8/8/8/8/K7 w - - 0 1"),
+                   true);
+  ok &= expectBool("bare kings insufficient", bareKings.isInsufficientMaterial(),
+                   true);
+
+  Board bishopOnly;
+  ok &= expectBool("load bishop versus king",
+                   bishopOnly.setFromFen("7k/8/8/8/8/8/8/K1B5 w - - 0 1"),
+                   true);
+  ok &= expectBool("bishop versus king insufficient",
+                   bishopOnly.isInsufficientMaterial(), true);
+
+  Board bishopKnight;
+  ok &= expectBool(
+      "load bishop and knight",
+      bishopKnight.setFromFen("7k/8/8/8/8/8/8/K1BN4 w - - 0 1"), true);
+  ok &= expectBool("bishop and knight has mating material",
+                   bishopKnight.isInsufficientMaterial(), false);
+
+  Board sameColorBishops;
+  ok &= expectBool(
+      "load same-color bishops",
+      sameColorBishops.setFromFen("5b1k/8/8/8/8/8/8/K1B5 w - - 0 1"), true);
+  ok &= expectBool("same-color bishops insufficient",
+                   sameColorBishops.isInsufficientMaterial(), true);
+
+  Board oppositeColorBishops;
+  ok &= expectBool(
+      "load opposite-color bishops",
+      oppositeColorBishops.setFromFen("2b4k/8/8/8/8/8/8/K1B5 w - - 0 1"),
+      true);
+  ok &= expectBool("opposite-color bishops retain mating material",
+                   oppositeColorBishops.isInsufficientMaterial(), false);
+
+  Board mateAtBoundary;
+  ok &= expectBool(
+      "load mate before 50-move boundary",
+      mateAtBoundary.setFromFen("7k/8/5KQ1/8/8/8/8/8 w - - 99 1"), true);
+  clearSearchState();
+  const SearchResult mateResult = searchBestMove(mateAtBoundary, {2});
+  ok &= expectBool("mate overrides 50-move boundary", mateResult.score > 29000,
+                   true);
+
+  std::ifstream network(CHESS_ENGINE_TEST_EVALFILE, std::ios::binary);
+  if (network.good()) {
+    network.close();
+    ok &= expectBool("load NNUE for rule50 conversion test",
+                     loadNnueFile(CHESS_ENGINE_TEST_EVALFILE), true);
+    Board conversion;
+    ok &= expectBool(
+        "load conversion position",
+        conversion.setFromFen(
+            "8/8/5pp1/7p/5BkP/6P1/2r3K1/8 b - - 99 152"),
+        true);
+    clearSearchState();
+    const SearchResult conversionResult = searchBestMove(conversion, {2});
+    ok &= expectBool("conversion search has a move", conversionResult.hasBestMove,
+                     true);
+    ok &= expectBool(
+        "conversion search chooses a zeroing pawn move",
+        conversionResult.hasBestMove &&
+            pieceType(conversion.at(conversionResult.bestMove.fromSquare())) ==
+                PieceType::Pawn,
+        true);
+    ok &= expectBool("conversion remains winning", conversionResult.score > 0,
+                     true);
+    clearNnueFile();
+  }
+
+  return ok;
+}
+
 bool runUciProtocolTests() {
   bool ok = true;
 
@@ -320,6 +513,8 @@ bool runUciProtocolTests() {
       "uci\n"
       "isready\n"
       "setoption name EvalFile value <empty>\n"
+      "setoption name SingularExtensions value false\n"
+      "setoption name MoveOverhead value 250\n"
       "setoption name EvalFile value /tmp/chess_engine_missing.nnue\n"
       "position startpos moves e2e4 e7e5\n"
       "fen\n"
@@ -335,13 +530,19 @@ bool runUciProtocolTests() {
   ok &= expectTextContains("uci id", text, "id name chess_engine");
   ok &=
       expectTextContains("uci eval file option", text, "option name EvalFile");
+  ok &= expectTextContains("uci singular option", text,
+                           "option name SingularExtensions type check");
+  ok &= expectTextContains("uci move overhead option", text,
+                           "option name MoveOverhead type spin");
+  ok &= expectTextContains("uci move overhead set", text,
+                           "MoveOverhead set to 250 ms");
   ok &= expectTextContains("uci ok", text, "uciok");
   ok &= expectTextContains("uci ready", text, "readyok");
   ok &= expectTextContains("uci bad nnue file", text,
                            "failed to load Stockfish NNUE");
   ok &= expectTextContains("uci fen", text,
                            "fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/"
-                           "PPPP1PPP/RNBQKBNR w KQkq e6 0 1");
+                           "PPPP1PPP/RNBQKBNR w KQkq e6 0 2");
   ok &= expectTextContains("uci nnue eval", text, "nnueeval loaded 0 score 0");
   ok &= expectTextContains("uci eval command", text,
                            "NNUE evaluation 0 (side to move, internal units)");
@@ -363,6 +564,11 @@ bool runUciProtocolTests() {
   ok &= expectTextContains("uci see stats", text, "see_prunes ");
   ok &= expectTextContains("uci futility stats", text, "futility_prunes ");
   ok &= expectTextContains("uci lmp stats", text, "lmp_prunes ");
+  ok &= expectTextContains("uci singular stats", text, "singular_searches ");
+  ok &= expectTextContains("uci probcut stats", text, "probcut_attempts ");
+  ok &= expectTextContains("uci rfp stats", text, "rfp_prunes ");
+  ok &= expectTextContains("uci razor stats", text, "razor_attempts ");
+  ok &= expectTextContains("uci iir stats", text, "iir_reductions ");
   ok &= expectTextContains("uci bestmove", text, "bestmove ");
   ok &= expectTextContains("uci perft", text, "perft depth 2 nodes ");
 
@@ -436,6 +642,32 @@ bool runNnueTests() {
                        incrementalScore == rebuiltScore, true);
     }
 
+    Board siblingTransitions;
+    int rootScore = 0;
+    ok &= expectBool("seed sibling NNUE accumulator",
+                     nnue::evaluate(siblingTransitions, rootScore), true);
+    ok &= expectBool("first sibling move",
+                     applyUciMove(siblingTransitions, "e2e4"), true);
+    int firstSiblingScore = 0;
+    ok &= expectBool("evaluate first sibling",
+                     nnue::evaluate(siblingTransitions, firstSiblingScore),
+                     true);
+    nnue::rewindAccumulator(siblingTransitions);
+    ok &= expectBool("undo first sibling", siblingTransitions.undoMove(), true);
+    ok &= expectBool("second sibling move",
+                     applyUciMove(siblingTransitions, "d2d4"), true);
+    int siblingIncrementalScore = 0;
+    ok &= expectBool(
+        "incrementally transform between siblings",
+        nnue::evaluate(siblingTransitions, siblingIncrementalScore), true);
+    nnue::resetAccumulatorCache();
+    int siblingRebuiltScore = 0;
+    ok &= expectBool("rebuild second sibling",
+                     nnue::evaluate(siblingTransitions, siblingRebuiltScore),
+                     true);
+    ok &= expectBool("sibling NNUE transition equals rebuild",
+                     siblingIncrementalScore == siblingRebuiltScore, true);
+
     Board randomized;
     nnue::resetAccumulatorCache();
     int seededScore = 0;
@@ -493,6 +725,18 @@ bool runNnueTests() {
 
 bool runEvaluationAndSearchTests() {
   bool ok = true;
+
+  TranspositionTable evalTable;
+  evalTable.resize(1);
+  evalTable.store(0x123456789abcdef0ULL, 7, 42,
+                  TranspositionBound::Exact, {}, 321);
+  TranspositionProbe evalProbe;
+  ok &= expectBool("tt static eval probe",
+                   evalTable.probe(0x123456789abcdef0ULL, evalProbe), true);
+  ok &= expectBool("tt static eval present", evalProbe.hasStaticEval, true);
+  ok &= expectBool("tt static eval quantization",
+                   evalProbe.staticEval >= 304 && evalProbe.staticEval <= 336,
+                   true);
 
   clearNnueFile();
   Board start;
@@ -630,6 +874,39 @@ bool runEvaluationAndSearchTests() {
   ok &= expectBool("lmr attempts reductions", lmr.lmrAttempts > 0, true);
   ok &= expectBool("lmr researches no more than attempts",
                    lmr.lmrResearches <= lmr.lmrAttempts, true);
+
+  clearSearchState();
+  Board selectiveStart;
+  SearchLimits selectiveLimits;
+  selectiveLimits.depth = 6;
+  selectiveLimits.useSingularExtensions = true;
+  selectiveLimits.singularMinDepth = 4;
+  selectiveLimits.useProbCut = false;
+  const SearchResult selective =
+      searchBestMove(selectiveStart, selectiveLimits);
+  ok &= expectBool("elite selective search has best move",
+                   selective.hasBestMove, true);
+  ok &= expectBool("singular verification searches execute",
+                   selective.singularSearches > 0, true);
+  ok &= expectBool("singular extensions bounded by searches",
+                   selective.singularExtensions <= selective.singularSearches,
+                   true);
+
+  Board probCutStart;
+  SearchLimits probCutLimits;
+  probCutLimits.depth = 5;
+  probCutLimits.useTranspositionTable = false;
+  probCutLimits.useNullMovePruning = false;
+  probCutLimits.useSingularExtensions = false;
+  probCutLimits.probCutMinDepth = 3;
+  probCutLimits.probCutReduction = 2;
+  probCutLimits.probCutMargin = 30000;
+  const SearchResult probCut = searchBestMove(probCutStart, probCutLimits);
+  ok &= expectBool("probcut search has best move", probCut.hasBestMove, true);
+  ok &=
+      expectBool("probcut searches execute", probCut.probCutAttempts > 0, true);
+  ok &= expectBool("probcut prunes bounded by attempts",
+                   probCut.probCutPrunes <= probCut.probCutAttempts, true);
 
   return ok;
 }
@@ -779,7 +1056,9 @@ int main() {
   };
 
   bool ok = runMoveEncodingAndHashTests();
+  ok &= runStagedMoveGenerationTests();
   ok &= runRepetitionTests();
+  ok &= runEndgameRuleTests();
   ok &= runUciProtocolTests();
   ok &= runNnueTests();
   ok &= runEvaluationAndSearchTests();

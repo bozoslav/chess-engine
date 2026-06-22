@@ -8,8 +8,8 @@
 constexpr int kSearchMaxPvLength = 96;
 
 struct SearchResult {
-  Move bestMove;
-  Move principalVariation[kSearchMaxPvLength];
+  Move bestMove{};
+  Move principalVariation[kSearchMaxPvLength] = {};
   int score = 0;
   int depth = 0;
   int pvLength = 0;
@@ -33,6 +33,14 @@ struct SearchResult {
   std::uint64_t seePrunes = 0;
   std::uint64_t futilityPrunes = 0;
   std::uint64_t lateMovePrunes = 0;
+  std::uint64_t singularSearches = 0;
+  std::uint64_t singularExtensions = 0;
+  std::uint64_t probCutAttempts = 0;
+  std::uint64_t probCutPrunes = 0;
+  std::uint64_t reverseFutilityPrunes = 0;
+  std::uint64_t razorAttempts = 0;
+  std::uint64_t razorPrunes = 0;
+  std::uint64_t internalIterativeReductions = 0;
   std::uint64_t timeMs = 0;
   bool hasBestMove = false;
   bool stopped = false;
@@ -51,6 +59,12 @@ struct SearchLimits {
   bool useStaticExchangeEvaluation = true;
   bool useFutilityPruning = true;
   bool useLateMovePruning = true;
+  bool useSingularExtensions = true;
+  bool useProbCut = true;
+  bool useReverseFutilityPruning = true;
+  bool useRazoring = true;
+  bool useInternalIterativeReduction = true;
+  bool useCorrectionHistory = false;
   bool iterativeDeepening = true;
   int aspirationWindow = 50;
   int nullMoveReduction = 2;
@@ -59,6 +73,13 @@ struct SearchLimits {
   int futilityMargin = 120;
   int lateMovePruningMaxDepth = 3;
   int lateMovePruningBaseMoveCount = 8;
+  int singularMinDepth = 6;
+  int singularMarginPerDepth = 2;
+  int probCutMinDepth = 5;
+  int probCutReduction = 3;
+  int probCutMargin = 100;
+  int reverseFutilityMargin = 85;
+  int razorMargin = 250;
   int threads = 1;
   int rootMoveSeed = 0;
   std::uint64_t timeLimitMs = 0;
@@ -66,9 +87,13 @@ struct SearchLimits {
   // Internal Lazy SMP telemetry. Workers publish in coarse batches so UCI NPS
   // reflects aggregate throughput without an atomic increment per node.
   std::atomic<std::uint64_t>* sharedNodeCounter = nullptr;
+  std::atomic<std::uint32_t>* sharedRootHint = nullptr;
+  int iterativeStartDepth = 1;
+  bool preferSharedRootMove = true;
   SearchInfoCallback onDepthComplete = nullptr;
   void* infoContext = nullptr;
 };
 
 void clearSearchState();
+void prepareSearchThreads(int threadCount);
 SearchResult searchBestMove(Board& board, SearchLimits limits);

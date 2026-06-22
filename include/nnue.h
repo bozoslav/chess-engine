@@ -24,6 +24,9 @@ void clearNetwork();
 bool networkLoaded();
 const char* lastError();
 void resetAccumulatorCache();
+// Rewinds a materialized child accumulator before the board undoes that move.
+// No work is performed when the child returned without evaluating.
+void rewindAccumulator(const Board& child);
 
 // Returns false only when no compatible network is loaded.
 bool evaluate(const Board& board, int& score);

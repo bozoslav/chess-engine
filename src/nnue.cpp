@@ -119,7 +119,7 @@ std::string g_lastError;
 std::uint32_t g_nextGeneration = 1;
 thread_local EvaluationScratch t_scratch;
 thread_local std::array<AccumulatorCacheEntry, Board::kMaxHistory + 1>
-    t_accumulatorCache;
+    t_accumulatorStack;
 
 class NetworkReader {
  public:
@@ -239,11 +239,6 @@ Color pieceColor(Piece piece) {
   return isWhitePiece(piece) ? Color::White : Color::Black;
 }
 
-Piece pieceFromColorType(Color color, PieceType type) {
-  const int offset = color == Color::White ? 0 : 10;
-  return static_cast<Piece>(offset + static_cast<int>(type));
-}
-
 int stockfishPieceType(Piece piece) {
   return static_cast<int>(pieceType(piece)) - static_cast<int>(PieceType::Pawn);
 }
@@ -253,7 +248,7 @@ int stockfishPieceId(Piece piece) {
 }
 
 Piece pieceAt(const Board& board, Square square) {
-  return board.at(bitboard::coordX(square), bitboard::coordY(square));
+  return board.at(square);
 }
 
 Bitboard pseudoAttacks(PieceType type, Color color, Square square) {
@@ -397,15 +392,23 @@ void addThreatFeature(ActiveFeatures& active, int index) {
   active.threats[active.threatCount++] = static_cast<std::uint16_t>(index);
 }
 
-void sortThreatFeatures(ActiveFeatures& active) {
-  for (std::uint32_t index = 1; index < active.threatCount; ++index) {
-    const std::uint16_t value = active.threats[index];
+template <std::size_t Size>
+void sortFeatures(std::array<std::uint16_t, Size>& features,
+                  std::uint32_t count) {
+  for (std::uint32_t index = 1; index < count; ++index) {
+    const std::uint16_t value = features[index];
     std::uint32_t insertion = index;
-    while (insertion > 0 && active.threats[insertion - 1] > value) {
-      active.threats[insertion] = active.threats[insertion - 1];
+    while (insertion > 0 && features[insertion - 1] > value) {
+      features[insertion] = features[insertion - 1];
       --insertion;
     }
-    active.threats[insertion] = value;
+    features[insertion] = value;
+  }
+}
+
+void sortActiveFeatures(ActiveFeatures (&active)[2]) {
+  for (ActiveFeatures& features : active) {
+    sortFeatures(features.threats, features.threatCount);
   }
 }
 
@@ -420,62 +423,52 @@ void collectFeatures(const Board& board, ActiveFeatures (&active)[2],
   }
 
   if (collectHalfKa) {
-    for (int colorValue = 0; colorValue < 2; ++colorValue) {
-      const Color color = colorValue == 0 ? Color::White : Color::Black;
-      for (int typeValue = static_cast<int>(PieceType::Pawn);
-           typeValue <= static_cast<int>(PieceType::King); ++typeValue) {
-        const PieceType type = static_cast<PieceType>(typeValue);
-        Bitboard pieces = board.pieces(color, type);
-        while (pieces != 0) {
-          const Square square = bitboard::popLsb(pieces);
-          const Piece piece = pieceFromColorType(color, type);
-          for (int perspective = 0; perspective < 2; ++perspective) {
-            if (active[perspective].halfKaCount >=
-                active[perspective].halfKa.size()) {
-              active[perspective].overflow = true;
-              return;
-            }
-            const Color perspectiveColor =
-                perspective == 0 ? Color::White : Color::Black;
-            active[perspective].halfKa[active[perspective].halfKaCount++] =
-                halfKaIndex(perspectiveColor, kings[perspective], square,
-                            piece);
-          }
-        }
+    ActiveFeatures& white = active[0];
+    ActiveFeatures& black = active[1];
+    Bitboard pieces = board.allPieces();
+    while (pieces != 0) {
+      const Square square = bitboard::popLsb(pieces);
+      const Piece piece = pieceAt(board, square);
+      if (white.halfKaCount >= white.halfKa.size() ||
+          black.halfKaCount >= black.halfKa.size()) {
+        white.overflow = true;
+        black.overflow = true;
+        return;
       }
+      white.halfKa[white.halfKaCount++] =
+          halfKaIndex(Color::White, kings[0], square, piece);
+      black.halfKa[black.halfKaCount++] =
+          halfKaIndex(Color::Black, kings[1], square, piece);
     }
   }
 
   const Bitboard occupied = board.allPieces();
   const Bitboard pawns = board.pieces(Color::White, PieceType::Pawn) |
                          board.pieces(Color::Black, PieceType::Pawn);
-  for (int typeValue = static_cast<int>(PieceType::Pawn);
-       typeValue <= static_cast<int>(PieceType::King); ++typeValue) {
-    for (int colorValue = 0; colorValue < 2; ++colorValue) {
-      const Color color = colorValue == 0 ? Color::White : Color::Black;
-      const PieceType type = static_cast<PieceType>(typeValue);
-      Bitboard attackers = board.pieces(color, type);
-      while (attackers != 0) {
-        const Square from = bitboard::popLsb(attackers);
-        const Piece attacker = pieceFromColorType(color, type);
-        Bitboard targets =
-            actualAttacks(type, color, from, occupied) & occupied;
-        if (type == PieceType::Pawn) {
-          const int push = color == Color::White ? 8 : -8;
-          const Square forward = from + push;
-          if (forward >= 0 && forward < 64 &&
-              (pawns & bitboard::bit(forward)) != 0)
-            targets |= bitboard::bit(forward);
-        }
-        while (targets != 0) {
-          const Square to = bitboard::popLsb(targets);
-          const Piece attacked = pieceAt(board, to);
-          addThreatFeature(active[0], threatIndex(Color::White, attacker, from,
-                                                  to, attacked, kings[0]));
-          addThreatFeature(active[1], threatIndex(Color::Black, attacker, from,
-                                                  to, attacked, kings[1]));
-        }
+  Bitboard attackers = occupied;
+  while (attackers != 0) {
+    const Square from = bitboard::popLsb(attackers);
+    const Piece attacker = pieceAt(board, from);
+    const PieceType type = pieceType(attacker);
+    const Color color = pieceColor(attacker);
+    Bitboard targets = actualAttacks(type, color, from, occupied) & occupied;
+    if (type == PieceType::Pawn) {
+      const Square forward = from + (color == Color::White ? 8 : -8);
+      if (forward >= 0 && forward < bitboard::kSquareCount &&
+          (pawns & bitboard::bit(forward)) != 0) {
+        targets |= bitboard::bit(forward);
       }
+    }
+    while (targets != 0) {
+      const Square to = bitboard::popLsb(targets);
+      const Piece attacked = pieceAt(board, to);
+      addThreatFeature(active[0], threatIndex(Color::White, attacker, from, to,
+                                              attacked, kings[0]));
+      addThreatFeature(active[1], threatIndex(Color::Black, attacker, from, to,
+                                              attacked, kings[1]));
+    }
+    if (active[0].overflow || active[1].overflow) {
+      return;
     }
   }
 }
@@ -515,17 +508,61 @@ void applyThreatFeature(const Network& network, AccumulatorCacheEntry& entry,
       &network.threatWeights[static_cast<std::size_t>(feature) * kL1Size];
 #if defined(__ARM_NEON)
   std::size_t i = 0;
-  for (; i + 16 <= kL1Size; i += 16) {
-    const int8x16_t packed = vld1q_s8(weights + i);
-    const int16x8_t low16 = vmovl_s8(vget_low_s8(packed));
-    const int16x8_t high16 = vmovl_s8(vget_high_s8(packed));
-    std::int16_t* target = entry.accumulation[perspective] + i;
-    const int16x8_t currentLow = vld1q_s16(target);
-    const int16x8_t currentHigh = vld1q_s16(target + 8);
-    vst1q_s16(target, sign > 0 ? vaddq_s16(currentLow, low16)
-                               : vsubq_s16(currentLow, low16));
-    vst1q_s16(target + 8, sign > 0 ? vaddq_s16(currentHigh, high16)
-                                   : vsubq_s16(currentHigh, high16));
+  std::int16_t* target = entry.accumulation[perspective];
+  if (sign > 0) {
+    for (; i + 32 <= kL1Size; i += 32) {
+      const int8x16_t p0 = vld1q_s8(weights + i);
+      const int8x16_t p1 = vld1q_s8(weights + i + 16);
+
+      const int16x8_t w0 = vmovl_s8(vget_low_s8(p0));
+      const int16x8_t w1 = vmovl_s8(vget_high_s8(p0));
+      const int16x8_t w2 = vmovl_s8(vget_low_s8(p1));
+      const int16x8_t w3 = vmovl_s8(vget_high_s8(p1));
+
+      const int16x8_t c0 = vld1q_s16(target + i);
+      const int16x8_t c1 = vld1q_s16(target + i + 8);
+      const int16x8_t c2 = vld1q_s16(target + i + 16);
+      const int16x8_t c3 = vld1q_s16(target + i + 24);
+
+      vst1q_s16(target + i, vaddq_s16(c0, w0));
+      vst1q_s16(target + i + 8, vaddq_s16(c1, w1));
+      vst1q_s16(target + i + 16, vaddq_s16(c2, w2));
+      vst1q_s16(target + i + 24, vaddq_s16(c3, w3));
+    }
+    for (; i + 16 <= kL1Size; i += 16) {
+      const int8x16_t packed = vld1q_s8(weights + i);
+      const int16x8_t low16 = vmovl_s8(vget_low_s8(packed));
+      const int16x8_t high16 = vmovl_s8(vget_high_s8(packed));
+      vst1q_s16(target + i, vaddq_s16(vld1q_s16(target + i), low16));
+      vst1q_s16(target + i + 8, vaddq_s16(vld1q_s16(target + i + 8), high16));
+    }
+  } else {
+    for (; i + 32 <= kL1Size; i += 32) {
+      const int8x16_t p0 = vld1q_s8(weights + i);
+      const int8x16_t p1 = vld1q_s8(weights + i + 16);
+
+      const int16x8_t w0 = vmovl_s8(vget_low_s8(p0));
+      const int16x8_t w1 = vmovl_s8(vget_high_s8(p0));
+      const int16x8_t w2 = vmovl_s8(vget_low_s8(p1));
+      const int16x8_t w3 = vmovl_s8(vget_high_s8(p1));
+
+      const int16x8_t c0 = vld1q_s16(target + i);
+      const int16x8_t c1 = vld1q_s16(target + i + 8);
+      const int16x8_t c2 = vld1q_s16(target + i + 16);
+      const int16x8_t c3 = vld1q_s16(target + i + 24);
+
+      vst1q_s16(target + i, vsubq_s16(c0, w0));
+      vst1q_s16(target + i + 8, vsubq_s16(c1, w1));
+      vst1q_s16(target + i + 16, vsubq_s16(c2, w2));
+      vst1q_s16(target + i + 24, vsubq_s16(c3, w3));
+    }
+    for (; i + 16 <= kL1Size; i += 16) {
+      const int8x16_t packed = vld1q_s8(weights + i);
+      const int16x8_t low16 = vmovl_s8(vget_low_s8(packed));
+      const int16x8_t high16 = vmovl_s8(vget_high_s8(packed));
+      vst1q_s16(target + i, vsubq_s16(vld1q_s16(target + i), low16));
+      vst1q_s16(target + i + 8, vsubq_s16(vld1q_s16(target + i + 8), high16));
+    }
   }
   for (; i < kL1Size; ++i)
 #else
@@ -545,12 +582,43 @@ void applyHalfKaFeature(const Network& network, AccumulatorCacheEntry& entry,
       &network.halfKaWeights[static_cast<std::size_t>(feature) * kL1Size];
 #if defined(__ARM_NEON)
   std::size_t i = 0;
-  for (; i + 8 <= kL1Size; i += 8) {
-    const int16x8_t packed = vld1q_s16(weights + i);
-    std::int16_t* target = entry.accumulation[perspective] + i;
-    const int16x8_t current = vld1q_s16(target);
-    vst1q_s16(target, sign > 0 ? vaddq_s16(current, packed)
-                               : vsubq_s16(current, packed));
+  std::int16_t* target = entry.accumulation[perspective];
+  if (sign > 0) {
+    for (; i + 32 <= kL1Size; i += 32) {
+      const int16x8_t w0 = vld1q_s16(weights + i);
+      const int16x8_t w1 = vld1q_s16(weights + i + 8);
+      const int16x8_t w2 = vld1q_s16(weights + i + 16);
+      const int16x8_t w3 = vld1q_s16(weights + i + 24);
+      const int16x8_t c0 = vld1q_s16(target + i);
+      const int16x8_t c1 = vld1q_s16(target + i + 8);
+      const int16x8_t c2 = vld1q_s16(target + i + 16);
+      const int16x8_t c3 = vld1q_s16(target + i + 24);
+      vst1q_s16(target + i, vaddq_s16(c0, w0));
+      vst1q_s16(target + i + 8, vaddq_s16(c1, w1));
+      vst1q_s16(target + i + 16, vaddq_s16(c2, w2));
+      vst1q_s16(target + i + 24, vaddq_s16(c3, w3));
+    }
+    for (; i + 8 <= kL1Size; i += 8) {
+      vst1q_s16(target + i, vaddq_s16(vld1q_s16(target + i), vld1q_s16(weights + i)));
+    }
+  } else {
+    for (; i + 32 <= kL1Size; i += 32) {
+      const int16x8_t w0 = vld1q_s16(weights + i);
+      const int16x8_t w1 = vld1q_s16(weights + i + 8);
+      const int16x8_t w2 = vld1q_s16(weights + i + 16);
+      const int16x8_t w3 = vld1q_s16(weights + i + 24);
+      const int16x8_t c0 = vld1q_s16(target + i);
+      const int16x8_t c1 = vld1q_s16(target + i + 8);
+      const int16x8_t c2 = vld1q_s16(target + i + 16);
+      const int16x8_t c3 = vld1q_s16(target + i + 24);
+      vst1q_s16(target + i, vsubq_s16(c0, w0));
+      vst1q_s16(target + i + 8, vsubq_s16(c1, w1));
+      vst1q_s16(target + i + 16, vsubq_s16(c2, w2));
+      vst1q_s16(target + i + 24, vsubq_s16(c3, w3));
+    }
+    for (; i + 8 <= kL1Size; i += 8) {
+      vst1q_s16(target + i, vsubq_s16(vld1q_s16(target + i), vld1q_s16(weights + i)));
+    }
   }
   for (; i < kL1Size; ++i)
 #else
@@ -590,8 +658,8 @@ void buildAccumulatorFresh(const Network& network,
   }
 }
 
-void updateHalfKa(const Network& network, const Board& board,
-                  AccumulatorCacheEntry& entry) {
+void updateHalfKaMove(const Network& network, const Board& board,
+                      AccumulatorCacheEntry& entry) {
   std::array<Board::PieceDelta, 5> deltas{};
   const int count =
       board.lastMovePieceDeltas(deltas.data(), static_cast<int>(deltas.size()));
@@ -600,35 +668,52 @@ void updateHalfKa(const Network& network, const Board& board,
     const Square king = board.kingSquare(color);
     for (int i = 0; i < count; ++i) {
       const Board::PieceDelta& delta = deltas[i];
-      if (delta.from >= 0)
+      if (delta.from >= 0) {
         applyHalfKaFeature(network, entry, perspective,
                            halfKaIndex(color, king, delta.from, delta.piece),
                            -1);
-      if (delta.to >= 0)
+      }
+      if (delta.to >= 0) {
         applyHalfKaFeature(network, entry, perspective,
                            halfKaIndex(color, king, delta.to, delta.piece), 1);
+      }
     }
   }
 }
 
-void updateAllThreats(const Network& network, AccumulatorCacheEntry& entry,
+template <std::size_t Size, typename ApplyFeature>
+void transformFeatureList(std::array<std::uint16_t, Size>& current,
+                          std::uint32_t& currentCount,
+                          const std::array<std::uint16_t, Size>& target,
+                          std::uint32_t targetCount,
+                          ApplyFeature applyFeature) {
+  auto oldIt = current.begin();
+  const auto oldEnd = oldIt + currentCount;
+  auto newIt = target.begin();
+  const auto newEnd = newIt + targetCount;
+  while (oldIt != oldEnd || newIt != newEnd) {
+    if (newIt == newEnd || (oldIt != oldEnd && *oldIt < *newIt)) {
+      applyFeature(*oldIt++, -1);
+    } else if (oldIt == oldEnd || *newIt < *oldIt) {
+      applyFeature(*newIt++, 1);
+    } else {
+      ++oldIt;
+      ++newIt;
+    }
+  }
+  currentCount = targetCount;
+  std::copy_n(target.begin(), targetCount, current.begin());
+}
+
+void transformThreats(const Network& network, AccumulatorCacheEntry& entry,
                       const ActiveFeatures (&active)[2]) {
   for (int perspective = 0; perspective < 2; ++perspective) {
-    auto oldIt = entry.threats[perspective].begin();
-    const auto oldEnd = oldIt + entry.threatCount[perspective];
-    auto newIt = active[perspective].threats.begin();
-    const auto newEnd = newIt + active[perspective].threatCount;
-    while (oldIt != oldEnd || newIt != newEnd) {
-      if (newIt == newEnd || (oldIt != oldEnd && *oldIt < *newIt)) {
-        applyThreatFeature(network, entry, perspective, *oldIt++, -1);
-      } else if (oldIt == oldEnd || *newIt < *oldIt) {
-        applyThreatFeature(network, entry, perspective, *newIt++, 1);
-      } else {
-        ++oldIt;
-        ++newIt;
-      }
-    }
-    storeThreatFeatures(entry, active[perspective], perspective);
+    transformFeatureList(
+        entry.threats[perspective], entry.threatCount[perspective],
+        active[perspective].threats, active[perspective].threatCount,
+        [&](std::uint16_t feature, int sign) {
+          applyThreatFeature(network, entry, perspective, feature, sign);
+        });
   }
 }
 
@@ -636,42 +721,42 @@ AccumulatorCacheEntry* prepareAccumulator(const Network& network,
                                           const Board& board) {
   const int ply = board.ply();
   if (ply < 0 || ply > Board::kMaxHistory) return nullptr;
-  AccumulatorCacheEntry& entry = t_accumulatorCache[ply];
+
+  AccumulatorCacheEntry& entry = t_accumulatorStack[ply];
   if (entry.valid && entry.key == board.key() &&
       entry.generation == network.generation)
     return &entry;
 
   const AccumulatorCacheEntry* parent = nullptr;
   if (ply > 0) {
-    const AccumulatorCacheEntry& candidate = t_accumulatorCache[ply - 1];
+    const AccumulatorCacheEntry& candidate = t_accumulatorStack[ply - 1];
     if (candidate.valid && candidate.key == board.previousKey() &&
-        candidate.generation == network.generation)
+        candidate.generation == network.generation) {
       parent = &candidate;
+    }
   }
 
   if (parent != nullptr && board.lastMoveWasNull()) {
     entry = *parent;
-    entry.key = board.key();
-    return &entry;
-  }
-
-  Color kingColor = Color::White;
-  const bool rebuild =
-      parent == nullptr || board.lastMoveChangedKingSquare(kingColor);
-  if (rebuild) {
-    ActiveFeatures active[2];
-    collectFeatures(board, active, true);
-    if (active[0].overflow || active[1].overflow) return nullptr;
-    for (ActiveFeatures& features : active) sortThreatFeatures(features);
-    buildAccumulatorFresh(network, active, entry);
   } else {
-    entry = *parent;
-    updateHalfKa(network, board, entry);
-    ActiveFeatures active[2];
-    collectFeatures(board, active, false);
-    if (active[0].overflow || active[1].overflow) return nullptr;
-    for (ActiveFeatures& features : active) sortThreatFeatures(features);
-    updateAllThreats(network, entry, active);
+    Color kingColor = Color::White;
+    const bool rebuild =
+        parent == nullptr || board.lastMoveChangedKingSquare(kingColor);
+    if (rebuild) {
+      ActiveFeatures active[2];
+      collectFeatures(board, active, true);
+      if (active[0].overflow || active[1].overflow) return nullptr;
+      sortActiveFeatures(active);
+      buildAccumulatorFresh(network, active, entry);
+    } else {
+      entry = *parent;
+      updateHalfKaMove(network, board, entry);
+      ActiveFeatures active[2];
+      collectFeatures(board, active, false);
+      if (active[0].overflow || active[1].overflow) return nullptr;
+      sortActiveFeatures(active);
+      transformThreats(network, entry, active);
+    }
   }
 
   entry.key = board.key();
@@ -916,8 +1001,10 @@ bool networkLoaded() { return g_network != nullptr; }
 const char* lastError() { return g_lastError.c_str(); }
 
 void resetAccumulatorCache() {
-  for (AccumulatorCacheEntry& entry : t_accumulatorCache) entry.valid = false;
+  for (AccumulatorCacheEntry& entry : t_accumulatorStack) entry.valid = false;
 }
+
+void rewindAccumulator(const Board&) {}
 
 bool evaluate(const Board& board, int& score) {
   if (g_network == nullptr) return false;

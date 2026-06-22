@@ -27,7 +27,7 @@ Piece capturedPiece(const Board& board, Move move) {
                                               : Piece::WhitePawn;
   }
 
-  return board.at(move.toX(), move.toY());
+  return board.at(move.toSquare());
 }
 
 Square enPassantCapturedSquare(Color side, Square target) {
@@ -92,7 +92,7 @@ void addPiece(Bitboard pieces[kColorCount][kPieceTypeCount], Color color,
 int staticExchangeEvaluation(const Board& board, Move move) {
   if (!AttackTables::initialized()) AttackTables::init();
 
-  const Piece movingPiece = board.at(move.fromX(), move.fromY());
+  const Piece movingPiece = board.at(move.fromSquare());
   if (movingPiece == Piece::None) return 0;
 
   const Color movingSide = board.sideToMove();
@@ -172,5 +172,83 @@ int staticExchangeEvaluation(const Board& board, Move move) {
 }
 
 bool staticExchangeNonLosing(const Board& board, Move move, int threshold) {
-  return staticExchangeEvaluation(board, move) >= threshold;
+  if (!AttackTables::initialized()) AttackTables::init();
+
+  const Piece movingPiece = board.at(move.fromSquare());
+  if (movingPiece == Piece::None) return 0 >= threshold;
+
+  const Color movingSide = board.sideToMove();
+  if (!matchesColor(movingPiece, movingSide)) return 0 >= threshold;
+
+  const PieceType movingType = pieceType(movingPiece);
+  const Piece captured = capturedPiece(board, move);
+  const PieceType capturedType = pieceType(captured);
+  const PieceType placedType = move.isPromotion() ? move.promo() : movingType;
+  const int promotionGain =
+      move.isPromotion() ? pieceValue(placedType) - pieceValue(PieceType::Pawn)
+                         : 0;
+
+  if (!move.isCapture() || captured == Piece::None) {
+    return promotionGain >= threshold;
+  }
+
+  const int initialGain = pieceValue(capturedType) + promotionGain - threshold;
+  if (initialGain < 0) return false;
+
+  Bitboard pieces[kColorCount][kPieceTypeCount] = {};
+  constexpr Color kColors[] = {Color::White, Color::Black};
+  for (const Color color : kColors) {
+    for (int type = static_cast<int>(PieceType::Pawn);
+         type <= static_cast<int>(PieceType::King); ++type) {
+      pieces[colorIndex(color)][type] =
+          board.pieces(color, static_cast<PieceType>(type));
+    }
+  }
+
+  const Square from = move.fromSquare();
+  const Square target = move.toSquare();
+  Square capturedSquare = target;
+  if (move.isEnPassant()) {
+    capturedSquare = enPassantCapturedSquare(movingSide, target);
+  }
+
+  Bitboard occupancy = board.allPieces();
+  removePiece(pieces, movingSide, movingType, from);
+  occupancy &= ~squareBit(from);
+  removePiece(pieces, oppositeColor(movingSide), capturedType, capturedSquare);
+  if (move.isEnPassant()) occupancy &= ~squareBit(capturedSquare);
+  addPiece(pieces, movingSide, placedType, target);
+  occupancy |= squareBit(target);
+
+  int gains[kMaxExchangePly] = {};
+  gains[0] = initialGain;
+  Color attackerSide = oppositeColor(movingSide);
+  Color targetOwner = movingSide;
+  PieceType targetType = placedType;
+  int depth = 0;
+
+  while (depth + 1 < kMaxExchangePly) {
+    const Attacker attacker =
+        leastValuableAttacker(pieces, attackerSide, target, occupancy);
+    if (attacker.square == kNoSquare) break;
+
+    ++depth;
+    gains[depth] = pieceValue(targetType) - gains[depth - 1];
+    if (std::max(-gains[depth - 1], gains[depth]) < 0) break;
+
+    removePiece(pieces, targetOwner, targetType, target);
+    removePiece(pieces, attackerSide, attacker.type, attacker.square);
+    addPiece(pieces, attackerSide, attacker.type, target);
+    occupancy &= ~squareBit(attacker.square);
+
+    targetOwner = attackerSide;
+    targetType = attacker.type;
+    attackerSide = oppositeColor(attackerSide);
+  }
+
+  while (depth > 0) {
+    --depth;
+    gains[depth] = -std::max(-gains[depth], gains[depth + 1]);
+  }
+  return gains[0] >= 0;
 }

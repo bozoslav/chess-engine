@@ -29,6 +29,7 @@ namespace {
 constexpr Square kNoSquare = -1;
 constexpr int kTimedSearchDepth = 64;
 constexpr int kMaxThreads = 128;
+constexpr int kMaxMoveOverheadMs = 5000;
 constexpr const char* kStartFen =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 #ifndef CHESS_ENGINE_DEFAULT_EVALFILE
@@ -72,6 +73,8 @@ int detectDefaultThreads() {
 }
 
 int gSearchThreads = detectDefaultThreads();
+bool gUseSingularExtensions = true;
+int gMoveOverheadMs = 30;
 
 constexpr BenchCase kBenchCases[] = {
     {
@@ -146,7 +149,8 @@ bool applyMoveList(Board& board, std::string_view text) {
 
     Move move;
     if (!moveFromUci(board, moveText, move)) return false;
-    if (!board.makeGeneratedMove(move)) return false;
+    // UCI move lists represent played game moves, so update FEN counters too.
+    if (!board.makeMove(move)) return false;
 
     if (end == std::string_view::npos) break;
     text.remove_prefix(end + 1);
@@ -161,6 +165,13 @@ int parsePositiveInt(std::string_view text, int fallback) {
   int value = fallback;
   stream >> value;
   return value > 0 ? value : fallback;
+}
+
+int parseNonNegativeInt(std::string_view text, int fallback, int maximum) {
+  std::istringstream stream{std::string(text)};
+  int value = fallback;
+  if (!(stream >> value)) return fallback;
+  return std::clamp(value, 0, maximum);
 }
 
 void writeMoveUci(std::ostream& out, const Move& move) {
@@ -199,7 +210,14 @@ void writeInfoLine(const Board& board, const SearchResult& result,
       << " lmr_attempts " << result.lmrAttempts << " lmr_researches "
       << result.lmrResearches << " see_prunes " << result.seePrunes
       << " futility_prunes " << result.futilityPrunes << " lmp_prunes "
-      << result.lateMovePrunes;
+      << result.lateMovePrunes << " singular_searches "
+      << result.singularSearches << " singular_extensions "
+      << result.singularExtensions << " probcut_attempts "
+      << result.probCutAttempts << " probcut_prunes " << result.probCutPrunes
+      << " rfp_prunes " << result.reverseFutilityPrunes
+      << " razor_attempts " << result.razorAttempts << " razor_prunes "
+      << result.razorPrunes << " iir_reductions "
+      << result.internalIterativeReductions;
   if (board.hasRepeatedPosition()) {
     out << " repetition " << board.repetitionCount();
   }
@@ -253,15 +271,27 @@ int allocateTimeMs(const Board& board, const GoOptions& options) {
       white ? options.whiteIncrementMs : options.blackIncrementMs;
   if (remaining <= 0) return 0;
 
-  const int divisor =
-      options.movesToGo > 0 ? std::clamp(options.movesToGo, 1, 80) : 30;
-  const int base = remaining / divisor;
-  const int incrementUse = increment / 2;
-  const int conservativeCap = std::max(1, remaining / 4);
-  const int reserve = remaining > 200 ? 50 : std::max(1, remaining / 10);
+  // A fixed remaining/30 budget is unsafe in long zero-increment games: the
+  // clock also pays process, bridge, and network latency on every move. Reserve
+  // that cost for the expected moves still to play before dividing the clock.
+  const int divisor = options.movesToGo > 0
+                          ? std::clamp(options.movesToGo, 1, 80)
+                          : (increment > 0 ? 30
+                                           : (board.fullmoveNumber() >= 40 ? 50
+                                                                          : 40));
+  const std::int64_t overheadReserve =
+      static_cast<std::int64_t>(gMoveOverheadMs) * divisor;
+  const int spendable = static_cast<int>(std::max<std::int64_t>(
+      1, static_cast<std::int64_t>(remaining) - overheadReserve));
+  const int base = std::max(1, spendable / divisor);
+  const int incrementUse =
+      std::max(0, increment - gMoveOverheadMs) * 3 / 4;
+  const int conservativeCap =
+      std::max(1, (remaining - gMoveOverheadMs) / 4);
   const int rawBudget = std::max(1, base + incrementUse);
   const int cappedBudget = std::min(rawBudget, conservativeCap);
-  return std::min(cappedBudget, std::max(1, remaining - reserve));
+  return std::min(cappedBudget,
+                  std::max(1, remaining - gMoveOverheadMs));
 }
 
 SearchLimits makeSearchLimits(const Board& board, const GoOptions& options,
@@ -278,6 +308,7 @@ SearchLimits makeSearchLimits(const Board& board, const GoOptions& options,
     limits.depth = 1;
   }
   limits.threads = gSearchThreads;
+  limits.useSingularExtensions = gUseSingularExtensions;
   limits.onDepthComplete = writeDepthInfo;
   limits.infoContext = &output;
   limits.stopSignal = stopSignal;
@@ -436,6 +467,7 @@ void handleSetOption(std::string_view command, std::ostream& out) {
   if (name == "Threads") {
     gSearchThreads =
         std::clamp(parsePositiveInt(value, gSearchThreads), 1, kMaxThreads);
+    prepareSearchThreads(gSearchThreads);
     out << "info string Threads set to " << gSearchThreads << '\n';
     return;
   }
@@ -447,6 +479,20 @@ void handleSetOption(std::string_view command, std::ostream& out) {
     globalTranspositionTable().resize(static_cast<std::size_t>(hashMb));
     out << "info string Hash set to " << globalTranspositionTable().hashSizeMb()
         << " MB\n";
+    return;
+  }
+
+  if (name == "SingularExtensions") {
+    gUseSingularExtensions = value == "true" || value == "1" || value == "on";
+    out << "info string SingularExtensions set to "
+        << (gUseSingularExtensions ? "true" : "false") << '\n';
+    return;
+  }
+
+  if (name == "MoveOverhead") {
+    gMoveOverheadMs =
+        parseNonNegativeInt(value, gMoveOverheadMs, kMaxMoveOverheadMs);
+    out << "info string MoveOverhead set to " << gMoveOverheadMs << " ms\n";
     return;
   }
 
@@ -584,6 +630,7 @@ bool runBench(std::ostream& out) {
 
 void runUci(std::istream& in, std::ostream& out) {
   configureDefaultsFromEnvironment();
+  prepareSearchThreads(gSearchThreads);
 
   Board board;
   std::string line;
@@ -612,6 +659,10 @@ void runUci(std::istream& in, std::ostream& out) {
             << globalTranspositionTable().hashSizeMb() << " min "
             << TranspositionTable::kMinHashMb << " max "
             << TranspositionTable::kMaxHashMb << '\n';
+        out << "option name SingularExtensions type check default "
+            << (gUseSingularExtensions ? "true" : "false") << '\n';
+        out << "option name MoveOverhead type spin default " << gMoveOverheadMs
+            << " min 0 max " << kMaxMoveOverheadMs << '\n';
         out << "uciok\n";
       });
     } else if (command == "isready") {

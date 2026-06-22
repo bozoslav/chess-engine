@@ -14,12 +14,14 @@ enum class TranspositionBound : std::uint8_t {
 };
 
 struct TranspositionProbe {
-  Move bestMove;
+  Move bestMove{};
   int score = 0;
+  int staticEval = 0;
   int depth = 0;
   TranspositionBound bound = TranspositionBound::Exact;
   bool hit = false;
   bool hasBestMove = false;
+  bool hasStaticEval = false;
 };
 
 class TranspositionTable {
@@ -40,11 +42,13 @@ class TranspositionTable {
   void newSearch();
   bool probe(std::uint64_t key, TranspositionProbe& out) const;
   void store(std::uint64_t key, int depth, int score, TranspositionBound bound,
-             Move bestMove);
+             Move bestMove, int staticEval = kNoStaticEval);
   std::size_t hashSizeMb() const;
   std::size_t bucketCount() const;
   std::size_t bytes() const;
   int hashfullPermill() const;
+
+  static constexpr int kNoStaticEval = 32767;
 
  private:
   std::unique_ptr<TTBucket[]> buckets_;

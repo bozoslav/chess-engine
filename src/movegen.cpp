@@ -26,8 +26,25 @@ constexpr bool isPawnStartRank(Color side, Square square) {
          (side == Color::Black && rank == 6);
 }
 
-Piece pieceAt(const Board& board, Square square) {
-  return board.at(bitboard::coordX(square), bitboard::coordY(square));
+Piece pieceAt(const Board& board, Square square) { return board.at(square); }
+
+enum class GenerationMode : std::uint8_t {
+  All,
+  Captures,
+  Quiets,
+  Noisy,
+};
+
+constexpr bool generatesCaptures(GenerationMode mode) {
+  return mode != GenerationMode::Quiets;
+}
+
+constexpr bool generatesQuiets(GenerationMode mode) {
+  return mode == GenerationMode::All || mode == GenerationMode::Quiets;
+}
+
+constexpr bool generatesQuietPromotions(GenerationMode mode) {
+  return mode != GenerationMode::Captures;
 }
 
 void pushMove(MoveList& moves, Square from, Square to,
@@ -122,7 +139,7 @@ bool sliderMatchesDirection(PieceType type, int dr, int df) {
 
 struct PinInfo {
   Bitboard pinned = 0;
-  Bitboard mask[bitboard::kSquareCount] = {};
+  Bitboard mask[bitboard::kSquareCount];
 };
 
 PinInfo computePins(const Board& board, Color side) {
@@ -196,12 +213,16 @@ Bitboard legalTargetMaskForPiece(Square from, Bitboard targets,
 
 void generateKingMoves(const Board& board, MoveList& moves, Color side,
                        Bitboard all, Bitboard own, Bitboard enemyKing,
-                       Bitboard enemyPieces, bool noisyOnly) {
+                       Bitboard enemyPieces, GenerationMode mode) {
   const Color enemy = oppositeColor(side);
   const Square from = board.kingSquare(side);
   const Bitboard fromBit = squareBit(from);
   Bitboard targets = AttackTables::kingAttacks(from) & ~own & ~enemyKing;
-  if (noisyOnly) targets &= enemyPieces;
+  if (!generatesCaptures(mode)) {
+    targets &= ~enemyPieces;
+  } else if (!generatesQuiets(mode)) {
+    targets &= enemyPieces;
+  }
   const Bitboard occupancyWithoutKing = all & ~fromBit;
 
   while (targets != 0) {
@@ -255,7 +276,7 @@ void generateCastling(const Board& board, MoveList& moves, Color side,
 
 void generatePawnMoves(const Board& board, MoveList& moves, Color side,
                        const PinInfo& pins, Bitboard evasionMask,
-                       Bitboard checkers, bool noisyOnly) {
+                       Bitboard checkers, GenerationMode mode) {
   const Color enemy = oppositeColor(side);
   const Bitboard all = board.allPieces();
   const Bitboard enemyKing = board.pieces(enemy, PieceType::King);
@@ -274,13 +295,14 @@ void generatePawnMoves(const Board& board, MoveList& moves, Color side,
       Bitboard quietTargets = squareBit(oneForward);
       quietTargets =
           legalTargetMaskForPiece(from, quietTargets, pins, evasionMask);
-      if (quietTargets != 0 &&
-          (!noisyOnly || isPromotionRank(side, oneForward))) {
+      const bool promotion = isPromotionRank(side, oneForward);
+      if (quietTargets != 0 && ((promotion && generatesQuietPromotions(mode)) ||
+                                (!promotion && generatesQuiets(mode)))) {
         pushPawnMove(moves, side, from, oneForward, false);
       }
 
       const Square twoForward = from + 2 * forward;
-      if (!noisyOnly && isPawnStartRank(side, from) &&
+      if (generatesQuiets(mode) && isPawnStartRank(side, from) &&
           (all & squareBit(twoForward)) == 0) {
         Bitboard doubleTarget = squareBit(twoForward);
         doubleTarget =
@@ -291,13 +313,15 @@ void generatePawnMoves(const Board& board, MoveList& moves, Color side,
       }
     }
 
-    Bitboard captures = AttackTables::pawnAttacks(side, from) & enemyPieces;
-    captures = legalTargetMaskForPiece(from, captures, pins, evasionMask);
-    while (captures != 0) {
-      pushPawnMove(moves, side, from, bitboard::popLsb(captures), true);
+    if (generatesCaptures(mode)) {
+      Bitboard captures = AttackTables::pawnAttacks(side, from) & enemyPieces;
+      captures = legalTargetMaskForPiece(from, captures, pins, evasionMask);
+      while (captures != 0) {
+        pushPawnMove(moves, side, from, bitboard::popLsb(captures), true);
+      }
     }
 
-    if (!board.hasEnPassant()) continue;
+    if (!generatesCaptures(mode) || !board.hasEnPassant()) continue;
     const Square epTarget = board.enPassantSquare();
     if ((AttackTables::pawnAttacks(side, from) & squareBit(epTarget)) == 0) {
       continue;
@@ -333,7 +357,7 @@ void generatePawnMoves(const Board& board, MoveList& moves, Color side,
 
 void generatePieceMoves(const Board& board, MoveList& moves, Color side,
                         PieceType type, const PinInfo& pins,
-                        Bitboard evasionMask, bool noisyOnly) {
+                        Bitboard evasionMask, GenerationMode mode) {
   const Color enemy = oppositeColor(side);
   const Bitboard own = board.occupancy(side);
   const Bitboard enemyKing = board.pieces(enemy, PieceType::King);
@@ -366,7 +390,11 @@ void generatePieceMoves(const Board& board, MoveList& moves, Color side,
 
     targets &= ~own;
     targets &= ~enemyKing;
-    if (noisyOnly) targets &= board.occupancy(enemy);
+    if (!generatesCaptures(mode)) {
+      targets &= ~board.occupancy(enemy);
+    } else if (!generatesQuiets(mode)) {
+      targets &= board.occupancy(enemy);
+    }
     targets = legalTargetMaskForPiece(from, targets, pins, evasionMask);
 
     while (targets != 0) {
@@ -382,9 +410,10 @@ void ensureAttackTablesInitialized() {
   if (!AttackTables::initialized()) AttackTables::init();
 }
 
-void generateLegalMoves(const Board& board, MoveList& moves, bool noisyOnly) {
+void generateLegalMoves(const Board& board, MoveList& moves,
+                        GenerationMode mode, bool clearOutput = true) {
   ensureAttackTablesInitialized();
-  moves.clear();
+  if (clearOutput) moves.clear();
 
   const Color side = board.sideToMove();
   const Color enemy = oppositeColor(side);
@@ -394,11 +423,15 @@ void generateLegalMoves(const Board& board, MoveList& moves, bool noisyOnly) {
   const Square kingSquare = board.kingSquare(side);
   const Bitboard checkers = attackersTo(board, kingSquare, enemy, all);
   // In check, every legal evasion is tactically relevant.
-  if (checkers != 0) noisyOnly = false;
+  if (checkers != 0 && mode == GenerationMode::Noisy) {
+    mode = GenerationMode::All;
+  }
 
   generateKingMoves(board, moves, side, all, own, enemyKing,
-                    board.occupancy(enemy) & ~enemyKing, noisyOnly);
-  if (!noisyOnly) generateCastling(board, moves, side, all, checkers);
+                    board.occupancy(enemy) & ~enemyKing, mode);
+  if (generatesQuiets(mode)) {
+    generateCastling(board, moves, side, all, checkers);
+  }
 
   if (bitboard::popcount(checkers) >= 2) return;
 
@@ -409,25 +442,37 @@ void generateLegalMoves(const Board& board, MoveList& moves, bool noisyOnly) {
     evasionMask = evasionMaskForSingleCheck(board, kingSquare, checker);
   }
 
-  generatePawnMoves(board, moves, side, pins, evasionMask, checkers, noisyOnly);
+  generatePawnMoves(board, moves, side, pins, evasionMask, checkers, mode);
   generatePieceMoves(board, moves, side, PieceType::Knight, pins, evasionMask,
-                     noisyOnly);
+                     mode);
   generatePieceMoves(board, moves, side, PieceType::Bishop, pins, evasionMask,
-                     noisyOnly);
+                     mode);
   generatePieceMoves(board, moves, side, PieceType::Rook, pins, evasionMask,
-                     noisyOnly);
+                     mode);
   generatePieceMoves(board, moves, side, PieceType::Queen, pins, evasionMask,
-                     noisyOnly);
+                     mode);
 }
 
 }  // namespace
 
 void genLegalMoves(const Board& board, MoveList& moves) {
-  generateLegalMoves(board, moves, false);
+  generateLegalMoves(board, moves, GenerationMode::All);
+}
+
+void genLegalCaptures(const Board& board, MoveList& moves) {
+  generateLegalMoves(board, moves, GenerationMode::Captures);
+}
+
+void genLegalQuiets(const Board& board, MoveList& moves) {
+  generateLegalMoves(board, moves, GenerationMode::Quiets);
+}
+
+void appendLegalQuiets(const Board& board, MoveList& moves) {
+  generateLegalMoves(board, moves, GenerationMode::Quiets, false);
 }
 
 void genLegalNoisyMoves(const Board& board, MoveList& moves) {
-  generateLegalMoves(board, moves, true);
+  generateLegalMoves(board, moves, GenerationMode::Noisy);
 }
 
 std::uint64_t perft(Board& board, int depth) {
@@ -442,7 +487,7 @@ std::uint64_t perft(Board& board, int depth) {
   for (const Move move : moves) {
     if (!board.makeGeneratedMove(move)) return 0;
     nodes += perft(board, depth - 1);
-    board.undoMove();
+    board.undoGeneratedMove();
   }
 
   return nodes;

@@ -19,6 +19,8 @@ namespace {
 constexpr std::uint8_t kOccupiedFlag = 0x80;
 constexpr std::uint8_t kBoundMask = 0x03;
 constexpr unsigned kGenerationShift = 48U;
+constexpr unsigned kStaticEvalShift = 56U;
+constexpr std::uint8_t kNoStaticEvalCode = 0x80U;
 
 using TTSlot = TranspositionTable::TTSlot;
 using TTBucket = TranspositionTable::TTBucket;
@@ -51,14 +53,35 @@ std::uint8_t clampDepth(int depth) {
   return static_cast<std::uint8_t>(std::min(depth, kMaxDepth));
 }
 
+std::uint8_t encodeStaticEval(int staticEval) {
+  if (staticEval == TranspositionTable::kNoStaticEval) {
+    return kNoStaticEvalCode;
+  }
+  const int quantized = std::clamp(staticEval / 16, -127, 127);
+  return static_cast<std::uint8_t>(static_cast<std::int8_t>(quantized));
+}
+
+bool hasStaticEval(std::uint64_t data) {
+  return static_cast<std::uint8_t>(data >> kStaticEvalShift) !=
+         kNoStaticEvalCode;
+}
+
+int unpackStaticEval(std::uint64_t data) {
+  const auto encoded =
+      static_cast<std::int8_t>(data >> kStaticEvalShift);
+  return static_cast<int>(encoded) * 16;
+}
+
 std::uint64_t packData(int depth, int score, TranspositionBound bound,
-                       Move bestMove) {
+                       Move bestMove, int staticEval) {
   return static_cast<std::uint64_t>(bestMove.raw()) |
          (static_cast<std::uint64_t>(
               static_cast<std::uint16_t>(clampScore(score)))
           << 16U) |
          (static_cast<std::uint64_t>(clampDepth(depth)) << 32U) |
-         (static_cast<std::uint64_t>(encodeFlags(bound)) << 40U);
+         (static_cast<std::uint64_t>(encodeFlags(bound)) << 40U) |
+         (static_cast<std::uint64_t>(encodeStaticEval(staticEval))
+          << kStaticEvalShift);
 }
 
 std::uint16_t unpackMove(std::uint64_t data) {
@@ -173,10 +196,12 @@ bool TranspositionTable::probe(std::uint64_t key,
     const std::uint16_t move = unpackMove(data);
     out.bestMove = Move::fromRaw(move);
     out.score = unpackScore(data);
+    out.staticEval = hasStaticEval(data) ? unpackStaticEval(data) : 0;
     out.depth = unpackDepth(data);
     out.bound = decodeBound(data);
     out.hit = true;
     out.hasBestMove = move != 0;
+    out.hasStaticEval = hasStaticEval(data);
     return true;
   }
 
@@ -185,7 +210,8 @@ bool TranspositionTable::probe(std::uint64_t key,
 }
 
 void TranspositionTable::store(std::uint64_t key, int depth, int score,
-                               TranspositionBound bound, Move bestMove) {
+                               TranspositionBound bound, Move bestMove,
+                               int staticEval) {
   if (buckets_ == nullptr || bucketCount_ == 0) return;
 
   const std::uint8_t generation = generation_.load(std::memory_order_relaxed);
@@ -203,8 +229,13 @@ void TranspositionTable::store(std::uint64_t key, int depth, int score,
     return;
   }
 
+  if (staticEval == kNoStaticEval && occupied(previousData) &&
+      previousKey == key && hasStaticEval(previousData)) {
+    staticEval = unpackStaticEval(previousData);
+  }
+
   const std::uint64_t newData =
-      packData(storedDepth, score, bound, bestMove) |
+      packData(storedDepth, score, bound, bestMove, staticEval) |
       (static_cast<std::uint64_t>(generation) << kGenerationShift);
   slot.data.store(newData, std::memory_order_relaxed);
   slot.key.store(key ^ newData, std::memory_order_relaxed);
